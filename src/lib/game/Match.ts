@@ -32,18 +32,8 @@ export interface MatchCallbacks {
 
 interface Announcement { text: string; sub?: string; timer: number; max: number; size: number; color: string }
 
-const TITAN_QUAKE_WAVE: MoveData = {
-  id: 'quake_wave', name: 'Quake Wave', kind: 'special', startup: 0, active: 1, recovery: 0,
-  damage: 9, angle: 38, bkb: 13, kbg: 55,
-  projectile: { kind: 'shockwave', speed: 6, life: 42, r: 12, dmg: 9, angle: 38, bkb: 13, kbg: 55, groundHug: true, color: '#ffd166', sfx: 'hit2' },
-  projFrame: 0, sfx: 'hit2', fxColor: '#ffd166',
-};
-const TITAN_SLAM_WAVE: MoveData = {
-  id: 'slam_wave', name: 'Slam Shockwave', kind: 'special', startup: 0, active: 1, recovery: 0,
-  damage: 11, angle: 32, bkb: 15, kbg: 66,
-  projectile: { kind: 'shockwave', speed: 6.5, life: 46, r: 13, dmg: 11, angle: 32, bkb: 15, kbg: 66, groundHug: true, color: '#ffd166', sfx: 'hit3' },
-  projFrame: 0, sfx: 'hit3', fxColor: '#ffd166', strong: true,
-};
+// NOTE: the Titan shockwave move data lives in fighters/Fighter.ts (single
+// source of truth). Match used to carry a second, differently-tuned copy.
 
 export class Match implements World {
   stage: Stage;
@@ -61,6 +51,13 @@ export class Match implements World {
   countdown = 190;
   endTimer = 0;
   winner = -1;
+
+  // ---- match clock ----
+  // Before this, a stalemate simply never ended: the balance harness measured
+  // 20% of AI matches running past four minutes with no resolution.
+  timeLimitFrames = 0;
+  timeLeftFrames = 0;
+  timedOut = false;
 
   // netplay
   netMode: 'off' | 'host' | 'client' = 'off';
@@ -112,6 +109,10 @@ export class Match implements World {
     this.trainingDummy = config.training?.dummy ?? null;
     if (config.training) this.trainingDummy = config.training.dummy;
     this.stockIcons = config.stocks;
+    const limit = config.training ? 0 : (config.timeLimit ?? MATCH.defaultTime);
+    this.timeLimitFrames = Math.max(0, Math.round(limit * 60));
+    this.timeLeftFrames = this.timeLimitFrames;
+    this.stage.seedRng(this.stage.id.length * 7919 + config.players.length * 104729);
 
     if (mods.lowGravity) this.gravity *= 0.58;
 
@@ -241,9 +242,13 @@ export class Match implements World {
     this.emitSfx(move.projectile.sfx);
   }
 
-  spawnTrap(f: Fighter) {
-    const x = f.x + f.facing * 34;
-    // snap to closest platform top below feet
+  /**
+   * Shared placement for every ground trap. Snaps to the platform top under the
+   * requested spot and enforces a PER-OWNER CAP so a zoner cannot carpet the
+   * stage — the oldest trap is retired when the cap is hit.
+   */
+  private placeTrap(f: Fighter, offset: number, style: Trap['style'], arm: number, cap: number, sfx = 'trap') {
+    const x = f.x + f.facing * offset;
     const feet = f.y + f.h / 2;
     let bestY = feet;
     let found = false;
@@ -253,29 +258,34 @@ export class Match implements World {
         if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
       }
     }
-    this.traps.push(new Trap(f, x, bestY));
-    this.emitSfx('trap');
-  }
-
-  spawnVoidSpikes(f: Fighter) {
-    // WRAITH's space control: a void pool further out than Hook's snare
-    const x = f.x + f.facing * 96;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
+    const mine = this.traps.filter(t => t.owner === f && t.style === style);
+    while (mine.length >= cap) {
+      const oldest = mine.shift()!;
+      oldest.life = 0;
+      const idx = this.traps.indexOf(oldest);
+      if (idx >= 0) this.traps.splice(idx, 1);
+      this.particles.emit({ type: 'spark', x: oldest.x, y: oldest.y, maxLife: 14, size: 3, color: '#889', vx: 0, vy: -1 });
     }
     const t = new Trap(f, x, bestY);
-    t.style = 'spikes';
+    t.style = style;
+    if (arm > 0) t.arm = arm;
     this.traps.push(t);
-    this.emitSfx('trap');
+    if (sfx) this.emitSfx(sfx as Parameters<Match['emitSfx']>[0]);
+    return t;
   }
 
+  spawnTrap(f: Fighter) { this.placeTrap(f, 34, 'rune', 0, 2); }
+
+  /** WRAITH's space control: a void pool further out than Hook's snare */
+  spawnVoidSpikes(f: Fighter) { this.placeTrap(f, 96, 'spikes', 0, 2); }
+
   spawnVenomCloud(x: number, y: number, owner: Fighter) {
+    const mine = this.traps.filter(t => t.owner === owner && t.style === 'venom');
+    while (mine.length >= 3) {
+      const oldest = mine.shift()!;
+      const idx = this.traps.indexOf(oldest);
+      if (idx >= 0) this.traps.splice(idx, 1);
+    }
     const t = new Trap(owner, x, y);
     t.style = 'venom';
     t.arm = 6;
@@ -283,41 +293,10 @@ export class Match implements World {
     this.pushEv({ k: 'sfx', s: 'poison' });
   }
 
-  spawnLightWard(f: Fighter) {
-    const x = f.x + f.facing * 80;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
-    }
-    const t = new Trap(f, x, bestY);
-    t.style = 'light';
-    this.traps.push(t);
-    this.emitSfx('trap');
-  }
+  spawnLightWard(f: Fighter) { this.placeTrap(f, 80, 'light', 0, 1); }
 
-  spawnBearTrap(f: Fighter) {
-    // JAEGER's Snare Trap: clamps the first fighter that steps on it
-    const x = f.x + f.facing * 52;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
-    }
-    const t = new Trap(f, x, bestY);
-    t.style = 'beartrap';
-    t.arm = 24;
-    this.traps.push(t);
-    this.emitSfx('trap');
-  }
+  /** JAEGER's Snare Trap: clamps the first fighter that steps on it */
+  spawnBearTrap(f: Fighter) { this.placeTrap(f, 52, 'beartrap', 24, 2); }
 
   onSwing(f: Fighter, m: MoveData) {
     // replicate the weapon-swing FX on remote clients (particles are local-only)
@@ -646,6 +625,17 @@ export class Match implements World {
   }
 
   private stepFight(inputs: InputState[]) {
+    // ---- clock ----
+    if (this.timeLimitFrames > 0 && !this.suddenDeath) {
+      this.timeLeftFrames--;
+      const secs = Math.ceil(this.timeLeftFrames / 60);
+      if (this.timeLeftFrames % 60 === 0 && secs > 0 && secs <= 5) {
+        this.audio.play('count');
+        this.announce(String(secs), 80, '#ffd166', undefined, 40);
+      }
+      if (this.timeLeftFrames === 60 * 30) this.announce('30 SECONDS', 34, '#ffd166', undefined, 60);
+      if (this.timeLeftFrames <= 0) { this.onTimeUp(); return; }
+    }
     // AI + training dummies
     for (const ai of this.ais) {
       ai.update(inputs[ai.idx]);
@@ -760,6 +750,36 @@ export class Match implements World {
     }
   }
 
+  /**
+   * Clock expiry. Ranking is stocks first, then least damage taken — the
+   * standard platform-fighter tiebreak. A dead tie goes to sudden death.
+   */
+  private onTimeUp() {
+    this.timedOut = true;
+    const score = (f: Fighter) => f.stocks * 10000 - f.damage;
+    const ranked = [...this.fighters].sort((a, b) => score(b) - score(a));
+    const tied = ranked.filter(f => Math.abs(score(f) - score(ranked[0])) < 0.001);
+    if (tied.length > 1) {
+      this.suddenDeath = true;
+      this.timeLeftFrames = 60 * 60;
+      this.announce('SUDDEN DEATH!', 60, '#ffd166', 'tied on time', 110);
+      for (const f of this.fighters) {
+        if (tied.includes(f)) { f.stocks = 1; f.damage = MATCH.suddenDeathDamage; }
+        else { f.stocks = 0; f.state = 'ko'; f.cancelMove(); }
+      }
+      this.respawnQueue.length = 0;
+      for (const f of tied) this.respawnQueue.push({ f, timer: 70 + f.playerIndex * 6 });
+      return;
+    }
+    this.winner = ranked[0].playerIndex;
+    this.phase = 'end';
+    this.endTimer = 0;
+    this.slowmo = 0.45;
+    this.announce('TIME!', 88, '#ffd166', `${ranked[0].cfg.info.name} WINS`, 170);
+    this.audio.play('ko');
+    this.flash(0.4, '255,220,140');
+  }
+
   private buildResult(): MatchResult {
     return {
       winner: this.winner,
@@ -771,6 +791,7 @@ export class Match implements World {
       bestCombo: this.fighters.map(f => f.comboBest),
       techs: this.fighters.map(f => f.techCount),
       durationFrames: this.tick,
+      timeout: this.timedOut,
     };
   }
 
@@ -1358,13 +1379,42 @@ export class Match implements World {
       }
     }
 
+    // ---- match clock ----
+    if (this.timeLimitFrames > 0) {
+      const total = Math.max(0, this.timeLeftFrames);
+      const mm = Math.floor(total / 3600);
+      const ss = Math.floor((total % 3600) / 60);
+      const cs = Math.floor((total % 60) / 0.6);
+      const low = total < 60 * 10;
+      const urgent = low ? 0.55 + Math.sin(this.tick * 0.35) * 0.45 : 1;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const cw = 138, ch = 44;
+      ctx.fillStyle = 'rgba(8,8,20,0.78)';
+      roundRect(ctx, W / 2 - cw / 2, 8, cw, ch, 10); ctx.fill();
+      ctx.strokeStyle = low ? `rgba(255,90,90,${urgent.toFixed(2)})` : 'rgba(255,255,255,0.16)';
+      ctx.lineWidth = low ? 2 : 1;
+      roundRect(ctx, W / 2 - cw / 2, 8, cw, ch, 10); ctx.stroke();
+      ctx.font = '900 26px "Arial Black", sans-serif';
+      ctx.fillStyle = low ? '#ff6b6b' : '#ffffff';
+      if (low) { ctx.shadowColor = '#ff4d4d'; ctx.shadowBlur = 14 * urgent; }
+      ctx.fillText(`${mm}:${String(ss).padStart(2, '0')}`, W / 2 - 12, 31);
+      ctx.shadowBlur = 0;
+      ctx.font = '800 14px "Segoe UI", sans-serif';
+      ctx.fillStyle = low ? 'rgba(255,140,140,0.9)' : 'rgba(255,255,255,0.55)';
+      ctx.fillText(`.${String(cs).padStart(2, '0')}`, W / 2 + 40, 33);
+      ctx.restore();
+    }
+
     // netplay status chip
     if (this.netMode !== 'off') {
       ctx.save();
       ctx.font = '600 12px monospace';
       ctx.fillStyle = 'rgba(140,255,220,0.75)';
       ctx.textAlign = 'center';
-      ctx.fillText(this.netMode === 'host' ? 'ONLINE · HOST' : 'ONLINE · CLIENT', W / 2, 26);
+      ctx.textAlign = 'left';
+      ctx.fillText(this.netMode === 'host' ? 'ONLINE · HOST' : 'ONLINE · CLIENT', 18, 26);
       ctx.restore();
     }
 
@@ -1500,7 +1550,7 @@ export class Match implements World {
 
   private drawPlayerCard(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: number, portrait: HTMLCanvasElement, alignRight: boolean, uiScale: number) {
     const scale = clamp((this.viewW / 1280) * uiScale, 0.55, 1.2);
-    const cardW = 262 * scale, cardH = 92 * scale;
+    const cardW = 262 * scale, cardH = 102 * scale;
     const x0 = alignRight ? x - cardW : x;
     const c = f.cfg.info.colors;
     const dmg = Math.floor(this.shownDamage[f.playerIndex]);
@@ -1577,11 +1627,21 @@ export class Match implements World {
     // underline
     ctx.fillStyle = c.glow;
     ctx.fillRect(alignRight ? cardW - pw - 22 - 120 * scale : pw + 22, 27 * scale, 120 * scale, 1.5);
-    // ---- poison stack indicator ----
-    if (f.poison > 0) {
+    // ---- status strip (poison / burn / chill / shock) ----
+    const statuses: [string, string][] = [];
+    if (f.poison > 0) statuses.push([`☠${f.poison}`, '#aef65c']);
+    if (f.burn > 0) statuses.push(['🔥', '#ff8a3c']);
+    if (f.chill > 0) statuses.push([`❄${f.chill}`, '#9fe8ff']);
+    if (f.shock > 0) statuses.push(['⚡', '#7cf3ff']);
+    if (statuses.length) {
       ctx.font = `800 ${11 * scale}px "Segoe UI", sans-serif`;
-      ctx.fillStyle = '#aef65c';
-      ctx.fillText(`☠ POISON ×${f.poison}`, alignRight ? cardW - pw - 22 : pw + 22, 40 * scale);
+      ctx.textAlign = alignRight ? 'right' : 'left';
+      let sx = alignRight ? cardW - pw - 22 : pw + 22;
+      for (const [glyph, colr] of statuses) {
+        ctx.fillStyle = colr;
+        ctx.fillText(glyph, sx, 40 * scale);
+        sx += (alignRight ? -1 : 1) * 26 * scale;
+      }
     }
     // ---- big italic damage % ----
     const col = dmg < 50 ? '#ffffff' : dmg < 90 ? '#ffd166' : dmg < 140 ? '#ff8a5c' : '#ff4d4d';
@@ -1607,8 +1667,60 @@ export class Match implements World {
     ctx.fillStyle = col;
     ctx.fillText(`${dmg}%`, 0, 0);
     ctx.restore();
+    // ---- SIGNATURE RESOURCE METER ----
+    // Every fighter has one and it is never the same bar twice: pips for
+    // ammo-style kits, a smooth bar for charge-style kits.
+    {
+      const spec = f.traitSpec, t = f.trait;
+      const mw = 108 * scale, mh = 7 * scale;
+      const mx = alignRight ? cardW - pw - 22 - mw : pw + 22;
+      const my = 66 * scale;
+      const pulse = t.flash > 0 ? 0.45 + Math.sin(this.tick * 0.7) * 0.35 : 0;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      roundRect(ctx, mx, my, mw, mh, mh / 2); ctx.fill();
+      if (spec.segments > 0) {
+        const seg = spec.segments;
+        const gap = 3 * scale;
+        const sw = (mw - gap * (seg - 1)) / seg;
+        for (let i = 0; i < seg; i++) {
+          const filled = i < t.charges;
+          ctx.fillStyle = filled ? spec.color : 'rgba(255,255,255,0.07)';
+          if (filled) { ctx.shadowColor = spec.color; ctx.shadowBlur = 6 * scale; }
+          roundRect(ctx, mx + i * (sw + gap), my, sw, mh, 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+        // partial refill on the next empty pip
+        if (t.charges < seg && t.meter > 0) {
+          const frac = clamp(t.meter * seg - t.charges, 0, 1);
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = spec.color;
+          roundRect(ctx, mx + t.charges * (sw + gap), my, sw * frac, mh, 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      } else {
+        ctx.fillStyle = spec.color;
+        ctx.shadowColor = spec.color;
+        ctx.shadowBlur = t.meter >= 1 ? 10 * scale : 4 * scale;
+        roundRect(ctx, mx, my, Math.max(2, mw * clamp(t.meter, 0, 1)), mh, mh / 2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      if (pulse > 0) {
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = '#ffffff';
+        roundRect(ctx, mx, my, mw, mh, mh / 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.font = `800 ${9 * scale}px "Segoe UI", sans-serif`;
+      ctx.textAlign = alignRight ? 'right' : 'left';
+      ctx.fillStyle = t.active || t.meter >= 1 ? spec.color : 'rgba(255,255,255,0.5)';
+      const caption = spec.hudText?.(f, t) ?? spec.label;
+      ctx.fillText(`${spec.label} ${caption}`, alignRight ? mx + mw : mx, my - 3 * scale);
+      ctx.restore();
+    }
+
     // ---- stock pips (glowing hexes) ----
-    const stockY = 76 * scale;
+    const stockY = 84 * scale;
     const maxPips = 5;
     if (this.stockIcons <= maxPips) {
       for (let i = 0; i < this.stockIcons; i++) {

@@ -102,13 +102,13 @@ export interface FighterConfig {
 let MOVE_INSTANCE = 1;
 
 // Synthesized wave moves spawned by Titan behaviors (not part of his move list)
-const TITAN_QUAKE_WAVE: MoveData = {
+export const TITAN_QUAKE_WAVE: MoveData = {
   id: 'quake_wave', name: 'Quake Wave', kind: 'special', startup: 0, active: 1, recovery: 0,
   damage: 6.5, angle: 28, bkb: 12, kbg: 42,
   projectile: { kind: 'shockwave', speed: 5.2, life: 30, r: 11, dmg: 6.5, angle: 28, bkb: 12, kbg: 42, groundHug: true, color: '#ffd166', sfx: 'hit3' },
   projFrame: 0, sfx: 'hit3', fxColor: '#ffd166',
 };
-const TITAN_SLAM_WAVE: MoveData = {
+export const TITAN_SLAM_WAVE: MoveData = {
   id: 'slam_wave', name: 'Slam Shockwave', kind: 'special', startup: 0, active: 1, recovery: 0,
   damage: 11, angle: 32, bkb: 15, kbg: 66,
   projectile: { kind: 'shockwave', speed: 6.5, life: 46, r: 13, dmg: 11, angle: 32, bkb: 15, kbg: 66, groundHug: true, color: '#ffd166', sfx: 'hit3' },

@@ -218,6 +218,8 @@ export interface PlayerSetup {
 export interface MatchConfig {
   players: PlayerSetup[];   // 2..4 fighters
   stocks: number;
+  /** match clock in seconds; 0 or undefined = no limit */
+  timeLimit?: number;
   stageId: string;
   training?: { dummy: TrainingDummy };
   modifiers?: Partial<ChallengeModifiers>;
@@ -244,6 +246,8 @@ export interface MatchResult {
   bestCombo: number[];
   techs: number[];          // successful techs per player (R11)
   durationFrames: number;
+  /** true when the clock ran out rather than a fighter losing every stock */
+  timeout?: boolean;
 }
 
 export interface GameSettings {

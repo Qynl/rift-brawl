@@ -6,7 +6,11 @@ import {
   MoveData, ThrowData, emptyInput,
 } from '../core/types';
 import { WeaponDef } from '../core/types';
-import { clamp, KB_MAX, KB_WEIGHT_REF, HITSTOP_BASE, HITSTOP_PER_PCT, HITSTOP_MAX, PHYS, rand } from '../core/constants';
+import {
+  clamp, KB_MAX, KB_WEIGHT_REF, HITSTOP_BASE, HITSTOP_PER_PCT, HITSTOP_MAX, PHYS, rand,
+  KB, SHIELD, TECH, DI, knockbackOf, hitstunOf, tumbles,
+} from '../core/constants';
+import { TraitSpec, TraitRuntime, newTraitRuntime, traitFor, HitContext } from './traits';
 import { Stage } from '../stages/Stage';
 import { ParticleSystem } from '../effects/Particles';
 import { AudioManager } from '../audio/AudioManager';
@@ -196,6 +200,22 @@ export class Fighter {
   techBuffer = 0;      // frames left to land a tech (shield/dodge pressed during launch)
   techFlash = 0;       // render popup timer after a successful tech
   techCount = 0;       // lifetime techs this match (results screen)
+  techLockout = 0;     // frames a mistimed tech input locks you out
+  sdiBudget = 0;       // smash-DI nudges left during the current hitlag
+  shieldDropLag = 0;   // frames of lag after releasing shield
+
+  // ---- signature trait (per-character resource kit) ----
+  traitSpec: TraitSpec;
+  trait: TraitRuntime;
+
+  // ---- status effects applied BY other fighters' kits ----
+  burn = 0;            // EMBER: damage-over-time frames
+  shock = 0;           // VOLT: frames marked, follow-ups hit harder
+  chill = 0;           // FROST: 0..4 slow stacks
+  chillTimer = 0;
+  frozen = 0;          // FROST: frames locked solid at 4 stacks
+  poisonOwner: Fighter | null = null;  // VIPER: who gets the lifesteal
+  statusFlash = 0;
 
   // fx
   flashTimer = 0;
@@ -214,10 +234,23 @@ export class Fighter {
     this.h = 52 * cfg.stats.scale;
     this.shieldMax = cfg.stats.shieldHp;
     this.shieldHp = this.shieldMax;
+    this.traitSpec = traitFor(cfg.info.id);
+    this.trait = newTraitRuntime(this.traitSpec);
   }
 
   get scale() { return this.cfg.stats.scale; }
   get stats() { return this.cfg.stats; }
+
+  /** Movement multiplier contributed by the signature trait + status effects. */
+  get mobilityMul(): number {
+    const traitMul = this.traitSpec.speedMul?.(this, this.trait) ?? 1;
+    const chillMul = 1 - this.chill * 0.08;
+    return traitMul * Math.max(0.55, chillMul);
+  }
+  get groundSpeedNow() { return this.stats.groundSpeed * this.mobilityMul; }
+  get airSpeedNow() { return this.stats.airSpeed * this.mobilityMul; }
+  /** Total mid-air jumps, including trait bonuses (TEMPEST / ascended SERAPH). */
+  get maxJumps() { return 3 + (this.traitSpec.extraJumps?.(this, this.trait) ?? 0); }
 
   spawnAt(x: number, y: number, facing: 1 | -1) {
     this.x = this.px = x; this.y = this.py = y;
@@ -240,6 +273,14 @@ export class Fighter {
     this.ledgeTimer = 0;
     this.techBuffer = 0;
     this.techFlash = 0;
+    this.techLockout = 0;
+    this.burn = 0;
+    this.shock = 0;
+    this.chill = 0; this.chillTimer = 0; this.frozen = 0;
+    this.poisonOwner = null;
+    this.shieldDropLag = 0;
+    this.trait = newTraitRuntime(this.traitSpec);
+    this.traitSpec.onSpawn?.(this, this.trait);
   }
 
   respawn(x: number, y: number, facing: 1 | -1) {
@@ -263,11 +304,23 @@ export class Fighter {
     else if (this.attackBuffer > 0) this.attackBuffer--;
     if (input.pressed.special) this.specialBuffer = 7;
     else if (this.specialBuffer > 0) this.specialBuffer--;
-    // TECH input capture: pressing shield/dodge while launched arms a 10-frame tech window
+    // TECH input capture: pressing shield/dodge while launched arms the tech window.
+    // Mistiming now costs you: a failed input locks tech out entirely for a while,
+    // so teching is a read rather than a mash.
     if (this.state === 'hitstun' || this.state === 'launch') {
-      if (input.pressed.shield || input.pressed.dodge) this.techBuffer = 10;
+      if (input.pressed.shield || input.pressed.dodge) {
+        if (this.techLockout > 0) {
+          this.techLockout = TECH.lockout;
+        } else if (this.techBuffer > 0) {
+          this.techBuffer = 0;
+          this.techLockout = TECH.lockout;
+        } else {
+          this.techBuffer = TECH.window;
+        }
+      }
     }
     if (this.techBuffer > 0) this.techBuffer--;
+    if (this.techLockout > 0) this.techLockout--;
     if (this.techFlash > 0) this.techFlash--;
     if (this.hitFlash > 0) this.hitFlash--;
     if (this.parried > 0) this.parried--;
@@ -282,25 +335,55 @@ export class Fighter {
 
     if (this.hitstop > 0) {
       this.hitstop--;
+      // SMASH DI: directional taps during hitlag physically shift you a few pixels.
+      // This is what lets a good player escape a true combo, and it only exists
+      // during the freeze frames, so it rewards reacting to the hit itself.
+      if (this.sdiBudget > 0 && (input.pressed.left || input.pressed.right || input.pressed.up || input.pressed.down)) {
+        const dx = (input.pressed.right ? 1 : 0) - (input.pressed.left ? 1 : 0);
+        const dy = (input.pressed.down ? 1 : 0) - (input.pressed.up ? 1 : 0);
+        if (dx || dy) {
+          const len = Math.hypot(dx, dy) || 1;
+          this.x += (dx / len) * DI.sdiStep;
+          this.y += (dy / len) * DI.sdiStep;
+          this.sdiBudget--;
+          this.world.particles.emit({
+            type: 'spark', x: this.x, y: this.y, maxLife: 8, size: 3,
+            color: '#bfe9ff', vx: -dx * 2, vy: -dy * 2,
+          });
+        }
+      }
       return; // frozen
     }
-    // poison DoT (VIPER venom): chips damage over time, cannot KO on its own
-    if (this.poison > 0 && this.poisonTimer > 0 && this.state !== 'ko' && this.state !== 'respawn') {
-      this.poisonTimer--;
-      if (this.poisonTimer <= 0) this.poison = 0;
-      if (this.poisonTimer % 12 === 0) {
-        this.damage = Math.min(999, this.damage + this.poison * 0.35);
+    this.updateStatusEffects();
+    this.traitSpec.tick?.(this, this.trait);
+    if (this.trait.flash > 0) this.trait.flash--;
+    if (this.statusFlash > 0) this.statusFlash--;
+    // FROZEN (FROST's payoff): locked solid, mash any direction to shatter out early
+    if (this.frozen > 0) {
+      this.frozen -= 1;
+      if (input.pressed.left || input.pressed.right || input.pressed.jump || input.pressed.attack) this.frozen -= 3;
+      this.vx *= 0.82;
+      if (this.world.tick % 6 === 0) {
         this.world.particles.emit({
-          type: 'glow', x: this.x + rand(-8, 8), y: this.y + rand(-14, 6),
-          maxLife: 22, size: rand(2.5, 4.5), color: '#aef65c', vx: rand(-0.2, 0.2), vy: rand(-1.4, -0.6), drag: 0.97,
+          type: 'icicle_frag', x: this.x + rand(-12, 12), y: this.y + rand(-18, 14),
+          maxLife: 16, size: rand(2.5, 5), color: '#9fe8ff', vx: rand(-0.6, 0.6), vy: rand(-0.4, 0.6),
         });
-        if (this.poisonTimer % 48 === 0) this.world.audio.play('poison');
       }
+      if (this.frozen <= 0) {
+        this.chill = 0;
+        this.world.particles.emit({ type: 'ring', x: this.x, y: this.y, maxLife: 14, size: 8, color: '#9fe8ff', vx: 0, vy: 0, drag: 1 });
+        this.world.emitSfx('crack');
+      }
+      this.physics();
+      return;
     }
     // coyote time bookkeeping
     this.coyote = this.grounded ? PHYS.coyoteFrames : Math.max(0, this.coyote - 1);
+    this.updateShieldRegen();
+    if (this.oosWindow > 0) this.oosWindow--;
 
     switch (this.state) {
+      case 'shieldbreak': this.updateShieldBreak(); break;
       case 'respawn': this.updateRespawn(input); break;
       case 'ko': return;
       case 'grabbed': this.updateGrabbed(); break;
@@ -382,9 +465,18 @@ export class Fighter {
           this.endCombo();
           this.state = 'land';
           this.stateTimer = 5;
-          this.vx *= 0.6;                 // keep sliding momentum (tech → escape roll feel)
+          // TECH ROLL: hold a direction as you tech to roll clear of the follow-up.
+          // Teching in place leaves you next to an attacker who read it.
+          const roll = Math.abs(this.input.axisX) > 0.4 ? Math.sign(this.input.axisX) : 0;
+          if (roll !== 0) {
+            this.vx = roll * TECH.rollSpeed;
+            this.stateTimer = 12;
+            this.facing = roll > 0 ? 1 : -1;
+          } else {
+            this.vx *= 0.6;
+          }
           this.vy = 0;
-          this.invuln = Math.max(this.invuln, 14);
+          this.invuln = Math.max(this.invuln, TECH.invuln);
           this.fastFalling = false;
           const dir = Math.sign(this.vx) || this.facing;
           this.world.particles.dust(this.x, this.y + this.h / 2, dir, 7, this.qualityN());
@@ -474,7 +566,7 @@ export class Fighter {
         this.vx *= 0.6;
       } else {
         // walking
-        const target = this.stats.groundSpeed * ax * (this.onIce ? 1 : 1);
+        const target = this.groundSpeedNow * ax;
         const accel = this.stats.groundAccel * (this.onIce ? 0.25 : 1);
         // skid: hard direction reversal at speed kicks up dust (readable turn intent)
         if (ax !== 0 && Math.sign(ax) !== Math.sign(this.vx) && Math.abs(this.vx) > 3.1 && this.world.tick % 3 === 0) {
@@ -482,7 +574,7 @@ export class Fighter {
         }
         if (ax !== 0) {
           this.vx += clamp(target - this.vx, -accel, accel);
-          this.state = Math.abs(this.vx) > this.stats.groundSpeed * 0.6 ? 'walk' : 'walk';
+          this.state = 'walk';
         } else {
           const fric = this.stats.friction * (this.onIce ? 0.06 : 1);
           this.vx -= clamp(this.vx, -fric, fric);
@@ -525,12 +617,39 @@ export class Fighter {
       this.state = 'air';
       if (ax !== 0) {
         const accel = this.stats.airAccel;
-        this.vx += clamp(this.stats.airSpeed * ax - this.vx, -accel, accel);
-        if (!this.move) this.facing = ax > 0 ? 1 : -1;
+        this.vx += clamp(this.airSpeedNow * ax - this.vx, -accel, accel);
+        // AERIAL FACING: remember which way we were facing BEFORE the stick turned us.
+        // Without this the back-air check below could never be true, which made
+        // bair literally unreachable on all twelve characters.
+        if (!this.move) {
+          this.aerialFacingPrev = this.facing;
+          this.aerialTurnFrames = 3;
+          this.facing = ax > 0 ? 1 : -1;
+        }
       }
+      if (this.aerialTurnFrames > 0) this.aerialTurnFrames--;
       // fast fall
       if (input.pressed.down && this.vy > 0.5 && !this.fastFalling) {
         this.fastFalling = true;
+      }
+      // TEMPEST: gale reserve buys instant omnidirectional air dashes
+      if (input.pressed.dash && this.traitSpec.id === 'gale' && this.trait.charges > 0) {
+        this.trait.charges--;
+        this.trait.flash = 12;
+        const len = Math.hypot(ax, input.axisY) || 1;
+        const dx = ax === 0 && input.axisY === 0 ? this.facing : ax / len;
+        const dy = ax === 0 && input.axisY === 0 ? 0 : input.axisY / len;
+        this.vx = dx * 13.5;
+        this.vy = dy * 11 - 1.2;
+        this.world.emitSfx('gust');
+        this.world.particles.dashTrail(this.x, this.y, -this.vx, -this.vy, this.cfg.info.colors.glow);
+        for (let i = 0; i < 6; i++) {
+          this.world.particles.emit({
+            type: 'glow', x: this.x - dx * i * 7, y: this.y - dy * i * 7,
+            maxLife: 14, size: 6 - i * 0.6, color: '#bff3ff', vx: -dx, vy: -dy,
+          });
+        }
+        return;
       }
       // air dodge (shield button works in the air too — easier recoveries)
       if ((input.pressed.dodge || input.pressed.shield) && !this.airDodgeUsed) {
@@ -551,7 +670,7 @@ export class Fighter {
   private tryJump(input: InputState): boolean {
     if (input.pressed.jump) this.jumpBuffer = PHYS.jumpBufferFrames;
     if (this.jumpBuffer > 0) {
-      const maxJumps = 3;
+      const maxJumps = this.maxJumps;
       if (this.grounded || this.coyote > 0) {
         this.jumpBuffer = 0; this.coyote = 0;
         this.jumpsUsed = 1;
@@ -586,7 +705,7 @@ export class Fighter {
     this.state = 'dash';
     this.facing = dir;
     this.stateTimer = this.stats.dashFrames;
-    this.vx = this.stats.dashSpeed * dir;
+    this.vx = this.stats.dashSpeed * this.mobilityMul * dir;
     this.dashCooldown = 0; // dashes are free-flowing movement now
     this.world.emitSfx('dash');
     this.world.particles.dashTrail(this.x, this.y, dir * 4, 0, this.cfg.info.colors.glow);
@@ -597,7 +716,7 @@ export class Fighter {
     this.stateTimer--;
     const ax = input.axisX;
     // maintain dash speed for the fixed burst duration, then hand back to walk/idle
-    this.vx = this.stats.dashSpeed * this.facing * (this.stateTimer / this.stats.dashFrames * 0.4 + 0.6);
+    this.vx = this.stats.dashSpeed * this.mobilityMul * this.facing * (this.stateTimer / this.stats.dashFrames * 0.4 + 0.6);
     if (this.stateTimer % 3 === 0) this.world.particles.dust(this.x - this.facing * 8, this.y + this.h / 2, this.facing, 2);
     if (this.stateTimer <= 0) {
       this.state = 'idle';
@@ -662,17 +781,56 @@ export class Fighter {
     this.shielding = true;
     this.shieldUpTimer++;
     this.vx -= clamp(this.vx, -this.stats.friction, this.stats.friction);
-    if (input.held.shield && this.grounded) {
-      // stay
-      if (input.pressed.attack) { this.startMove(this.cfg.moves['grab']); return; }
-      if (input.pressed.grab) { this.startMove(this.cfg.moves['grab']); return; }
-      if (input.pressed.dodge) { this.startGroundDodge(input.axisX); return; }
-      if (this.tryJump(input)) return;
-    } else {
-      this.shielding = false;
-      this.state = 'shieldstun';
-      this.stateTimer = 4; // drop lag
+    // Shields are a RESOURCE: they shrink while held and shatter if you turtle.
+    this.shieldHp -= SHIELD.drain;
+    if (this.shieldHp <= 0) { this.breakShield(); return; }
+    if (this.shieldStun > 0) {
+      // locked in blockstun: shield holds, but no options come out yet
+      this.shieldStun--;
+      if (!input.held.shield && this.shieldStun <= 0) this.dropShield(SHIELD.dropLag);
+      return;
     }
+    if (input.held.shield && this.grounded) {
+      // ---- OUT OF SHIELD OPTIONS: the whole point of blocking ----
+      if (input.pressed.attack || input.pressed.grab) { this.dropShield(0); this.startMove(this.cfg.moves['grab']); return; }
+      if (input.pressed.dodge) { this.dropShield(0); this.startGroundDodge(input.axisX); return; }
+      if (input.pressed.jump) {
+        // OOS jump → instantly cancellable into an aerial, the classic punish
+        this.dropShield(0);
+        this.grounded = false;
+        this.doJump(this.stats.jumpVel, 'jump');
+        this.oosWindow = 6;
+        return;
+      }
+      if (input.pressed.special) { this.dropShield(0); if (this.trySpecial(input)) return; }
+      if (input.held.up && input.pressed.attack) { this.dropShield(0); this.startMove(this.cfg.moves['uattack']); return; }
+    } else {
+      this.dropShield(SHIELD.dropLag);
+    }
+  }
+
+  /** frames after an OOS jump during which an aerial comes out with no jumpsquat */
+  oosWindow = 0;
+
+  private dropShield(lag: number) {
+    this.shielding = false;
+    this.shieldDropLag = lag;
+    if (lag > 0) {
+      this.state = 'shieldstun';
+      this.stateTimer = lag;
+    }
+  }
+
+  breakShield() {
+    this.shielding = false;
+    this.shieldHp = 0;
+    this.state = 'shieldbreak';
+    this.stateTimer = SHIELD.breakStun;
+    this.vy = -6;
+    this.grounded = false;
+    this.world.audio.play('shield_break');
+    this.world.onShieldBreak(this);
+    this.world.shake(9);
   }
 
   private updateShieldStun() {
@@ -680,6 +838,30 @@ export class Fighter {
     this.stateTimer--;
     this.vx -= clamp(this.vx, -this.stats.friction, this.stats.friction);
     if (this.stateTimer <= 0) this.state = 'idle';
+  }
+
+  private updateShieldRegen() {
+    if (this.shielding) return;
+    if (this.shieldHp < this.shieldMax) {
+      this.shieldHp = Math.min(this.shieldMax, this.shieldHp + SHIELD.regen);
+    }
+  }
+
+  private updateShieldBreak() {
+    this.shielding = false;
+    this.stateTimer--;
+    this.vx -= clamp(this.vx, -this.stats.friction * 0.5, this.stats.friction * 0.5);
+    if (this.world.tick % 5 === 0) {
+      this.world.particles.emit({
+        type: 'star', x: this.x + rand(-14, 14), y: this.y - this.h * 0.6,
+        vx: rand(-1, 1), vy: rand(-1.2, -0.3), maxLife: 30, size: 3, color: '#ffd166', grav: 0.02, drag: 0.96,
+      });
+    }
+    if (this.stateTimer <= 0) {
+      this.state = 'dizzy';
+      this.stateTimer = 40;
+      this.shieldHp = this.shieldMax * SHIELD.breakRefill;
+    }
   }
 
   private updateDizzy() {
@@ -826,7 +1008,7 @@ export class Fighter {
     this.state = 'air';
     this.grounded = false;
     this.vy = -this.stats.jumpVel * 1.04;
-    this.vx = inward * this.stats.groundSpeed * 0.85;
+    this.vx = inward * this.groundSpeedNow * 0.85;
     this.jumpsUsed = 2; // ledge jump costs the first air jump
     this.world.emitSfx('jump');
     this.world.particles.dust(this.x, this.y + this.h / 2, 0, 4);
@@ -886,13 +1068,24 @@ export class Fighter {
     return true;
   }
 
+  /** facing captured before the stick turned us mid-air (enables back-air) */
+  aerialFacingPrev: 1 | -1 = 1;
+  aerialTurnFrames = 0;
+
   private tryAirAttack(input: InputState): boolean {
     if (!input.pressed.attack && this.attackBuffer <= 0) return false;
     if (input.held.up) this.startMove(this.cfg.moves['uair']);
     else if (input.held.down) this.startMove(this.cfg.moves['dair']);
     else if (input.axisX !== 0) {
-      const fwd = (input.axisX > 0 ? 1 : -1) === this.facing;
-      this.startMove(this.cfg.moves[fwd ? 'fair' : 'bair']);
+      // Compare the stick against the facing we had BEFORE this turnaround.
+      // Holding away from your momentum within a few frames of turning gives
+      // you the back-air — the strongest aerial in every character's kit.
+      const stick = input.axisX > 0 ? 1 : -1;
+      const reference = this.aerialTurnFrames > 0 ? this.aerialFacingPrev : this.facing;
+      const fwd = stick === reference;
+      const move = this.cfg.moves[fwd ? 'fair' : 'bair'] ?? this.cfg.moves['fair'];
+      if (!fwd) this.facing = reference;   // bair: keep facing away, swing behind
+      this.startMove(move);
     } else this.startMove(this.cfg.moves['nair']);
     this.attackBuffer = 0;
     return true;
@@ -902,10 +1095,15 @@ export class Fighter {
     if (!input.pressed.special && this.specialBuffer <= 0) return false;
     // one up-special per airtime (restored on landing / when launched)
     if (input.held.up && this.upSpecialUsed && !this.grounded) return false;
-    if (input.held.up) { if (!this.startMove(this.cfg.moves['uspecial'])) return false; }
-    else if (input.held.down) this.startMove(this.cfg.moves['dspecial']);
-    else if (input.axisX !== 0) { this.facing = input.axisX > 0 ? 1 : -1; this.startMove(this.cfg.moves['sspecial']); }
-    else this.startMove(this.cfg.moves['nspecial']);
+    const slot: 'u' | 'd' | 's' | 'n' =
+      input.held.up ? 'u' : input.held.down ? 'd' : input.axisX !== 0 ? 's' : 'n';
+    const base = this.cfg.moves[`${slot}special`];
+    if (!base) return false;
+    // The kit gets first refusal: it can spend a resource and hand back a
+    // rewritten move (empowered, weakened, or projectile-less when dry).
+    const override = this.traitSpec.onSpecial?.(this, this.trait, slot, base);
+    if (slot === 's') this.facing = input.axisX > 0 ? 1 : -1;
+    if (!this.startMove(override ?? base)) return false;
     this.specialBuffer = 0;
     return true;
   }
@@ -1437,55 +1635,71 @@ export class Fighter {
   // ================= HITSTUN / KNOCKBACK =================
 
   applyKnockback(dmg: number, angleDeg: number, bkb: number, kbg: number, dirSign: number, attacker: Fighter | null, move: MoveData | null): number {
-    this.damage = Math.min(999, this.damage + dmg);
-    const weightMod = (KB_WEIGHT_REF / this.stats.weight) * (this.armorActive ? 0.35 : 1);
-    const dmgAfter = this.damage;
-    let kb = (bkb + kbg * (dmgAfter / 100) * 0.9 + kbg * dmg * 0.004) * weightMod * 0.57;
-    // RAGE: a fighter at high damage hits harder — built-in comeback pressure
-    if (attacker) kb *= 1 + clamp((attacker.damage - 55) / 300, 0, 0.15);
-    kb = Math.min(kb, KB_MAX);
+    const ctx: HitContext = { dmg, kb: 0, move, strong: !!move?.strong };
+
+    // ---- trait modifiers: attacker's kit scales output, victim's kit scales input ----
+    let dmgMul = 1, kbMul = 1, noLaunch = false;
+    if (attacker) {
+      const out = attacker.traitSpec.outgoing?.(attacker, this, attacker.trait, ctx);
+      if (out) { dmgMul *= out.dmg ?? 1; kbMul *= out.kb ?? 1; }
+    }
+    const inc = this.traitSpec.incoming?.(this, attacker, this.trait, { ...ctx, dmg: dmg * dmgMul });
+    if (inc) { dmgMul *= inc.dmg ?? 1; kbMul *= inc.kb ?? 1; noLaunch = !!inc.noLaunch; }
+
+    const finalDmg = dmg * dmgMul;
+    this.damage = Math.min(999, this.damage + finalDmg);
+
+    // ---- knockback (see core/constants: knockbackOf) ----
+    let kb = knockbackOf(this.damage, finalDmg, bkb, kbg, this.stats.weight) * kbMul;
+    if (this.armorActive) kb *= 0.35;
+    // RAGE: a damaged fighter hits harder — built-in comeback pressure
+    if (attacker) kb *= 1 + clamp((attacker.damage - KB.rageStart) / 320, 0, KB.rageMax);
+    if (noLaunch) kb = Math.min(kb, 3.2);
+    kb = Math.min(kb, KB.max);
+    ctx.kb = kb;
+
     // being launched releases a ledge hang
     if (this.ledge) this.clearLedge(20);
 
-    // ---- DI (Directional Influence): held input bends the launch angle ----
-    // Horizontal launches: up/down input raises/lowers the angle by up to ~10°.
-    // Vertical launches: input along the launch direction flattens the trajectory.
+    // ---- DI: held input bends the launch angle up to DI.maxAngle degrees ----
     let angle = angleDeg;
     const rad0 = angleDeg * Math.PI / 180;
     if (Math.abs(Math.cos(rad0)) >= 0.6) {
-      const di = clamp(this.input.axisY, -1, 1) * -10;
-      angle = clamp(angleDeg + di, 6, 86);
+      const di = clamp(this.input.axisY, -1, 1) * -DI.maxAngle;
+      angle = clamp(angleDeg + di, 4, 88);
       this.lastDI = Math.abs(di);
     } else {
-      const di = clamp(this.input.axisX * dirSign, -1, 1) * 8;
-      angle = clamp(angleDeg - di, 22, 88);
+      const di = clamp(this.input.axisX * dirSign, -1, 1) * DI.maxAngle;
+      angle = clamp(angleDeg - di, 18, 90);
       this.lastDI = Math.abs(di);
     }
 
     const rad = angle * Math.PI / 180;
-    const launchX = Math.cos(rad) * kb * dirSign;
-    const launchY = -Math.sin(rad) * kb;
-    this.vx = launchX;
-    this.vy = launchY;
-    this.grounded = false;
-    const strong = kb > 14 || !!move?.strong;
-    const hitstun = clamp(Math.round(kb * 1.15 + dmg * 0.4), 10, 54);
-    this.hitstun = hitstun;
-    this.state = kb > 8 ? 'launch' : 'hitstun';
-    this.hitFlash = 4; // white feedback flash (visible during hitstop)
+    this.vx = Math.cos(rad) * kb * dirSign;
+    this.vy = -Math.sin(rad) * kb;
+    if (!noLaunch) this.grounded = false;
+
+    this.hitstun = hitstunOf(kb, finalDmg);
+    // Only genuinely strong hits tumble. Everything below the threshold leaves
+    // the victim in plain hitstun near the attacker — that is the combo game.
+    this.state = tumbles(kb) ? 'launch' : 'hitstun';
+    this.sdiBudget = DI.sdiMax;
+    this.hitFlash = 5;
     this.cancelMove();
     this.shielding = false;
-    // restore recovery resources after being launched (helps recovery gameplay)
-    this.jumpsUsed = 0;
-    this.airDodgeUsed = false;
-    this.upSpecialUsed = false;
     this.fastFalling = false;
+    // NOTE: recovery resources are deliberately NOT refunded here. Getting hit
+    // offstage has to be dangerous or edgeguarding is worthless.
+    if (this.grounded === false && this.jumpsUsed === 0 && kb > 6) this.jumpsUsed = 1;
+
     if (attacker) {
       this.lastHitBy = attacker;
       this.lastHitTime = this.world.tick;
       if (this.comboable) attacker.comboCount++; else attacker.comboCount = 1;
       attacker.comboBest = Math.max(attacker.comboBest, attacker.comboCount);
-      attacker.damageDealt += dmg;
+      attacker.damageDealt += finalDmg;
+      attacker.traitSpec.onLandHit?.(attacker, this, attacker.trait, { ...ctx, dmg: finalDmg });
+      this.traitSpec.onTakeHit?.(this, attacker, this.trait, { ...ctx, dmg: finalDmg });
     }
     return kb;
   }
@@ -1620,21 +1834,24 @@ export class Fighter {
       // signature weapon extends melee reach (grabs stay honest but +3 keeps them usable)
       const isGrab = m.kind === 'grab' || m.kind === 'throw';
       const wreach = isGrab ? 0 : (this.cfg.weapon?.reach ?? 0);
+      // kits can extend grab reach (HOOK's chain) — grabs were used in 0.3% of
+      // all move starts before this, largely because they whiffed at any range
+      const grabMul = isGrab ? (this.traitSpec.grabRangeMul?.(this, this.trait) ?? 1) : 1;
       for (const hb of m.hitboxes) {
         // weapon-motion path: sweep arcs / thrust extensions / spins move the hitbox each frame
         const off = isGrab
-          ? { dx: hb.x + wreach + 3, dy: hb.y, ang: 0 }
+          ? { dx: (hb.x + wreach + 3) * grabMul, dy: hb.y, ang: 0 }
           : this.motionOffset(hb, m, f, wreach);
         // previous-frame path point → swept capsule (fast swings can no longer tunnel past a body)
         const prev = isGrab
-          ? { dx: hb.x + wreach + 3, dy: hb.y }
+          ? { dx: (hb.x + wreach + 3) * grabMul, dy: hb.y }
           : this.motionOffset(hb, m, f - 1, wreach);
         const px = this.px + prev.dx * s * this.facing;
         const py = this.py + prev.dy * s;
         out.push({
           x: this.x + off.dx * s * this.facing,
           y: this.y + off.dy * s,
-          r: (hb.r * HITBOX_BOOST + wreach * WEAPON_REACH_RADIUS) * s,
+          r: (hb.r * HITBOX_BOOST + wreach * WEAPON_REACH_RADIUS) * s * grabMul,
           px, py,
           dmg: (hb.dmg ?? m.damage) * dmgMul,
           angle: hb.angle ?? m.angle,
@@ -1654,21 +1871,29 @@ export class Fighter {
   }
 
   takeShieldHit(dmg: number, shieldstunF: number, dirSign: number) {
-    this.shieldHp -= dmg * 1.4;
-    this.state = 'shieldstun';
+    this.shieldHp -= dmg * SHIELD.dmgMul;
+    // Crucially the shield STAYS UP. Holding block through a multi-hit string is
+    // how blockstrings work; dropping it on frame one made shielding pointless.
+    this.state = 'shield';
+    this.shielding = true;
     this.stateTimer = shieldstunF;
-    this.shielding = false;
+    this.shieldStun = shieldstunF;
     this.vx += dirSign * Math.min(4, dmg * 0.35);
     this.hitstop = Math.min(8, 2 + dmg * 0.3);
     this.world.audio.play('shield_hit');
     this.world.particles.shieldHit(this.x + dirSign * 16, this.y, this.cfg.info.colors.glow);
-    if (this.shieldHp <= 0) {
-      this.shieldHp = this.shieldMax * 0.28;
-      this.state = 'dizzy';
-      this.stateTimer = 160;
-      this.world.audio.play('shield_break');
-      this.world.onShieldBreak(this);
-    }
+    this.traitSpec.onShieldHit?.(this, this.trait, dmg);
+    if (this.shieldHp <= 0) this.breakShield();
+  }
+
+  /** frames of shieldstun remaining — blocks OOS actions but keeps the shield up */
+  shieldStun = 0;
+
+  onParry(attacker: Fighter | null) {
+    this.shieldStun = 0;
+    this.stateTimer = 0;
+    void attacker;
+    this.traitSpec.onParry?.(this, this.trait);
   }
 
   hitstopFor(dmg: number, strong: boolean): number {
@@ -1721,9 +1946,121 @@ export class Fighter {
     if (s.tc !== undefined) this.techCount = s.tc;
   }
 
-  applyPoison(stacks: number) {
-    this.poison = Math.min(3, this.poison + stacks);
-    this.poisonTimer = Math.max(this.poisonTimer, 300);
+  // ================= STATUS EFFECTS (applied by other fighters' kits) =================
+
+  /** Poison stacks up to five and lifesteals back to whoever applied it (VIPER). */
+  applyPoison(stacks: number, owner?: Fighter | null) {
+    if (this.id === 'viper') return;                    // VIPER passive: immune
+    this.poison = Math.min(4, this.poison + stacks);
+    this.poisonTimer = Math.max(this.poisonTimer, 330);
+    if (owner) this.poisonOwner = owner;
+    this.statusFlash = 12;
+  }
+
+  /** Burn is a short, hot DoT with no lifesteal (EMBER). */
+  applyBurn(seconds: number) {
+    if (this.id === 'ember' || this.id === 'viper') return;
+    this.burn = Math.max(this.burn, Math.round(seconds * 60));
+    this.statusFlash = 12;
+  }
+
+  /** Shocked targets take more from the fighter who marked them (VOLT). */
+  applyShock(frames: number) {
+    if (this.id === 'volt') return;
+    this.shock = Math.max(this.shock, frames);
+  }
+
+  /** Chill slows, and the fourth stack freezes the victim solid (FROST). */
+  applyChill(stacks: number) {
+    if (this.id === 'frost') return;
+    this.chill = Math.min(4, this.chill + stacks);
+    this.chillTimer = 360;
+    this.statusFlash = 12;
+    if (this.chill >= 4 && this.frozen <= 0 && this.state !== 'ko' && this.state !== 'respawn') {
+      this.frozen = 36;
+      this.cancelMove();
+      this.state = 'dizzy';
+      this.stateTimer = 36;
+      this.world.emitSfx('shield_break');
+      this.world.particles.emit({ type: 'ring', x: this.x, y: this.y, maxLife: 18, size: 11, color: '#9fe8ff', vx: 0, vy: 0, drag: 1 });
+    }
+  }
+
+  /** VOLT's chain lightning fork — damage without a full launch. */
+  applyChainLightning(source: Fighter, dmg: number) {
+    this.damage = Math.min(999, this.damage + dmg);
+    this.applyShock(180);
+    this.hitstun = Math.max(this.hitstun, 12);
+    this.state = 'hitstun';
+    this.hitFlash = 4;
+    this.vy = Math.min(this.vy, -2);
+    source.damageDealt += dmg;
+    this.world.particles.hitBurst(this.x, this.y, 90, 0.4, '#7cf3ff', 1);
+    for (let i = 0; i < 5; i++) {
+      this.world.particles.emit({
+        type: 'spark', x: this.x + rand(-14, 14), y: this.y + rand(-20, 16),
+        maxLife: 10, size: 3.6, color: '#7cf3ff', vx: rand(-2.5, 2.5), vy: rand(-2.5, 2.5),
+      });
+    }
+  }
+
+  /** SERAPH's ascended aura — chip damage, no knockback, no hitstun. */
+  applyAuraTick(source: Fighter, dmg: number) {
+    this.damage = Math.min(999, this.damage + dmg);
+    source.damageDealt += dmg;
+    this.world.particles.emit({
+      type: 'glow', x: this.x + rand(-10, 10), y: this.y + rand(-16, 10),
+      maxLife: 16, size: 4, color: '#ffe08a', vx: 0, vy: -0.7,
+    });
+  }
+
+  private updateStatusEffects() {
+    if (this.state === 'ko' || this.state === 'respawn') {
+      this.burn = 0; this.poison = 0; this.chill = 0; this.shock = 0; this.frozen = 0;
+      return;
+    }
+    // poison: slow attrition, lifesteals to the applier
+    if (this.poison > 0 && this.poisonTimer > 0) {
+      this.poisonTimer--;
+      if (this.poisonTimer <= 0) { this.poison = 0; this.poisonOwner = null; }
+      if (this.poisonTimer % 20 === 0) {
+        const tick = this.poison * 0.22;
+        this.damage = Math.min(999, this.damage + tick);
+        if (this.poisonOwner && this.poisonOwner !== this) {
+          this.poisonOwner.damageDealt += tick;
+          this.poisonOwner.heal(tick * 0.2);
+        }
+        this.world.particles.emit({
+          type: 'glow', x: this.x + rand(-8, 8), y: this.y + rand(-14, 6),
+          maxLife: 22, size: rand(2.5, 4.5), color: '#aef65c', vx: rand(-0.2, 0.2), vy: rand(-1.4, -0.6), drag: 0.97,
+        });
+        if (this.poisonTimer % 60 === 0) this.world.audio.play('poison');
+      }
+    }
+    // burn: fast, hot, short
+    if (this.burn > 0) {
+      this.burn--;
+      if (this.burn % 10 === 0) {
+        this.damage = Math.min(999, this.damage + 0.45);
+        this.world.particles.emit({
+          type: 'ember', x: this.x + rand(-9, 9), y: this.y + rand(-16, 8),
+          maxLife: 18, size: rand(2.5, 4), color: '#ff8a3c', vx: rand(-0.3, 0.3), vy: rand(-1.6, -0.7),
+        });
+      }
+    }
+    if (this.shock > 0) {
+      this.shock--;
+      if (this.shock % 16 === 0) {
+        this.world.particles.emit({
+          type: 'spark', x: this.x + rand(-12, 12), y: this.y + rand(-18, 12),
+          maxLife: 7, size: 2.6, color: '#7cf3ff', vx: rand(-1, 1), vy: rand(-1, 1),
+        });
+      }
+    }
+    if (this.chill > 0 && this.frozen <= 0) {
+      this.chillTimer--;
+      if (this.chillTimer <= 0) { this.chill = Math.max(0, this.chill - 1); this.chillTimer = 200; }
+    }
   }
 
   heal(amount: number) { this.damage = Math.max(0, this.damage - amount); }

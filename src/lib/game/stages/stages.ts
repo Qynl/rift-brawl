@@ -621,7 +621,7 @@ const skyHooks: StageHooks = {
     const w = s.wind;
     const cycle = mods.chaosHazards ? 240 : 420;
     w.timer--;
-    if (w.phase === 'idle' && w.timer <= 0) { w.phase = 'warn'; w.timer = 90; w.dir = chance(0.5) ? 1 : -1; }
+    if (w.phase === 'idle' && w.timer <= 0) { w.phase = 'warn'; w.timer = 90; w.dir = s.srand() < 0.5 ? 1 : -1; }
     else if (w.phase === 'warn') {
       if (s.tick % 14 === 0) particles.emit({ type: 'streak', x: w.dir > 0 ? -700 : 700, y: rand(-200, 250), vx: w.dir * 10, vy: 0, maxLife: 30, size: 12, color: 'rgba(200,230,255,0.5)', drag: 0.99 });
       if (w.timer <= 0) { w.phase = 'active'; w.timer = 130; }

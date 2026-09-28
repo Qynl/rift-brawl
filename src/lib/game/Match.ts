@@ -5,7 +5,7 @@
 import {
   ChallengeModifiers, FighterId, InputState, MatchConfig, MatchResult, MoveData, ProjectileDef, TrainingDummy, emptyInput,
 } from './core/types';
-import { STEP, clamp, lerp, rand } from './core/constants';
+import { STEP, clamp, lerp, rand, SHIELD, MATCH, KB, shieldstunOf } from './core/constants';
 import { Stage } from './stages/Stage';
 import { buildStage } from './stages/stages';
 import { ParticleSystem } from './effects/Particles';
@@ -894,11 +894,15 @@ export class Match implements World {
   /** shield contact shared by melee & projectiles — supports the PARRY window */
   private attemptShieldHit(attacker: Fighter, victim: Fighter, victimIdx: number, dmg: number, dirSign: number, strong = false): boolean {
     void victimIdx;
-    // ---- PARRY (perfect shield): shield raised within 6 frames of impact ----
-    if (victim.shieldUpTimer <= 6) {
+    // ---- PARRY (perfect shield): shield raised within the parry window ----
+    if (victim.shieldUpTimer <= SHIELD.parryWindow) {
       victim.parried = 14;
-      victim.shieldHp = Math.min(victim.shieldMax, victim.shieldHp + 4);
-      attacker.applyHitstop(16);
+      victim.shieldHp = Math.min(victim.shieldMax, victim.shieldHp + 6);
+      victim.onParry(attacker);
+      attacker.applyHitstop(SHIELD.parryFreeze);
+      attacker.state = 'shieldstun';
+      attacker.stateTimer = Math.max(attacker.stateTimer, SHIELD.parryFreeze);
+      attacker.cancelMove();
       victim.applyHitstop(4);
       attacker.vx = dirSign * 6.5;
       const px = victim.x + dirSign * 16, py = victim.y;
@@ -915,7 +919,7 @@ export class Match implements World {
       this.announce('PARRY!', 38, '#ffe08a', undefined, 36);
       return true;
     }
-    victim.takeShieldHit(dmg, Math.round(3 + dmg * 0.45), dirSign);
+    victim.takeShieldHit(dmg, shieldstunOf(dmg), dirSign);
     attacker.applyHitstop(strong ? 9 : 6);
     return true;
   }
@@ -967,6 +971,7 @@ export class Match implements World {
         victim.grabTimer = 60;
         victim.cancelMove();
         victim.shielding = false;
+        attacker.traitSpec.onGrab?.(attacker, victim, attacker.trait);
         this.emitSfx('grab');
         this.emitSfx('grabbed');
         this.particles.emit({ type: 'ring', x: victim.x, y: victim.y, maxLife: 12, size: 6, color: victim.cfg.info.colors.glow, vx: 0, vy: 0 });
@@ -1011,9 +1016,9 @@ export class Match implements World {
     else if (attacker.comboCount === 5) this.emitSfx('combo2');
     else if (attacker.comboCount === 8) this.emitSfx('combo3');
     const hitstunMul = move?.hitstunMul ?? 1;
-    victim.hitstun = Math.round(clamp(victim.hitstun * hitstunMul, 8, 55));
+    victim.hitstun = Math.round(clamp(victim.hitstun * hitstunMul, KB.hitstunMin, KB.hitstunMax));
     // venom: poison stacks bite over time (VIPER)
-    if (venom) victim.applyPoison(1);
+    if (venom) victim.applyPoison(1, attacker);
     // hitstop
     const hs = attacker.hitstopFor(dmg, strong);
     attacker.applyHitstop(hs);
@@ -1100,6 +1105,7 @@ export class Match implements World {
     // credit (within 6s of last hit)
     if (f.lastHitBy && f.lastHitBy !== f && this.tick - f.lastHitTime < 360) {
       f.lastHitBy.kos++;
+      f.lastHitBy.traitSpec.onKO?.(f.lastHitBy, f.lastHitBy.trait);
     }
     // end checks (N players)
     const alive = this.fighters.filter(x => x.stocks > 0);

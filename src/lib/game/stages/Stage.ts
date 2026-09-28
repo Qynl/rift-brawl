@@ -67,6 +67,23 @@ export class Stage {
   hazard: HazardState = { kind: 'none', phase: 'idle', timer: 0, level: 1, currentY: 0, baseY: 0, highY: 0 };
   wind: { phase: 'idle' | 'warn' | 'active'; dir: 1 | -1; timer: number } = { phase: 'idle', dir: 1, timer: 0 };
   quality = 'high';
+  /**
+   * Seeded RNG for anything a hazard does that AFFECTS GAMEPLAY (wind direction,
+   * hazard targeting...). Cosmetic particle jitter may keep using Math.random,
+   * but simulation-visible randomness must come from here or replays, netcode
+   * rollback and the offline balance harness all break.
+   */
+  private rngState = 0;
+  private baseSeed = 0;
+  srand(): number {
+    this.rngState = (this.rngState + 0x6d2b79f5) | 0;
+    let t = this.rngState;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  /** Seed the hazard RNG (Match does this from the match seed). */
+  seedRng(seed: number) { this.rngState = seed | 0; }
 
   constructor(data: {
     id: string; name: string; desc: string; hazardLabel?: string | null;
@@ -82,6 +99,8 @@ export class Stage {
     this.spawns = data.spawns;
     this.camBounds = data.camBounds;
     this.hooks = data.hooks ?? {};
+    this.baseSeed = [...this.id].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 0x9e37);
+    this.rngState = this.baseSeed;
     this.setPlatforms(data.platforms);
     this.hooks.init?.(this);
   }
@@ -94,6 +113,7 @@ export class Stage {
 
   reset() {
     this.tick = 0;
+    this.rngState = this.baseSeed;
     for (const p of this.platforms) { p.cx = p.x; p.cy = p.y; p.broken = 0; p.cracks = 0; }
     this.windZones = [];
     this.portals = [];

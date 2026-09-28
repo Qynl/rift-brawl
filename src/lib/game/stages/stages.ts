@@ -4,15 +4,15 @@ import { Stage, Platform, StageHooks } from './Stage';
 import { FighterId } from '../core/types';
 import { rand, chance, mulberry32 } from '../core/constants';
 import { ParticleSystem } from '../effects/Particles';
+import { cachedLinear, cachedRadial } from '../effects/gradientCache';
 
 type Ctx = CanvasRenderingContext2D;
 
 // ---------- shared art helpers ----------
 
 function skyGrad(ctx: Ctx, y0: number, y1: number, c0: string, c1: string) {
-  const g = ctx.createLinearGradient(0, y0, 0, y1);
-  g.addColorStop(0, c0); g.addColorStop(1, c1);
-  ctx.fillStyle = g;
+  // cached: the sky ramp is identical every frame, it just used to be rebuilt
+  ctx.fillStyle = cachedLinear(ctx, 0, y0, 0, y1, [[0, c0], [1, c1]]);
   ctx.fillRect(-2200, y0, 4400, y1 - y0);
 }
 

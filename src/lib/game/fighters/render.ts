@@ -5,6 +5,8 @@
 import { Fighter, moveActive } from './Fighter';
 import { clamp, lerp } from '../core/constants';
 
+import { drawTraitAuraUnder, drawStatusFX, drawRimLight } from './aura';
+
 const VIS = 1.2; // visual presence bump (physics untouched)
 
 interface Pose {
@@ -415,8 +417,15 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: Fighter, tick: num
     ctx.globalAlpha = 0.45;
   }
 
+  // ---- signature resource aura (behind the body) ----
+  if (f.state !== 'respawn') drawTraitAuraUnder(ctx, f, rx, ry, tick);
+
   const pose = computePose(f, tick);
   const body = drawBody(ctx, f, rx, ry, tick, pose, alpha, false);
+  drawRimLight(ctx, f, rx, ry);
+
+  // ---- inflicted statuses (burn / poison / shock / chill / frozen) ----
+  drawStatusFX(ctx, f, rx, ry, tick);
 
   // ---- white hit-flash silhouette (Smash-style impact feedback) ----
   if (f.hitFlash > 0 && f.state !== 'respawn') {
@@ -444,19 +453,6 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: Fighter, tick: num
     ctx.beginPath();
     ctx.arc(rx, ry, f.h * 0.62 * VIS * (1.3 - f.parried / 24), 0, Math.PI * 2);
     ctx.stroke();
-    ctx.restore();
-  }
-
-  // ---- poison bubbles while venom ticks ----
-  if (f.poison > 0 && tick % 14 === 0) {
-    ctx.save();
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = '#aef65c';
-    for (let i = 0; i < f.poison + 1; i++) {
-      const bx = rx + Math.sin(tick * 0.2 + i * 2.4) * 9;
-      const by = ry - f.h * 0.3 - ((tick * 0.8 + i * 17) % 26);
-      ctx.beginPath(); ctx.arc(bx, by, 2 + Math.sin(tick * 0.3 + i) * 0.8, 0, Math.PI * 2); ctx.fill();
-    }
     ctx.restore();
   }
 

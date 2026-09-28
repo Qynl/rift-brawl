@@ -15,6 +15,8 @@ import { Fighter, World, HitInfo, ActiveHitbox, segDist, moveActive } from './fi
 import { FIGHTER_CONFIGS } from './fighters/configs';
 import { drawFighter, drawFighterShadow, drawShield, drawGrabLink } from './fighters/render';
 import { Projectile, Trap, swingFXSpec } from './fighters/combat';
+import { cachedLinear, cachedRadial } from './effects/gradientCache';
+import { applyPostFX } from './effects/postfx';
 import { AIController } from './ai/AIController';
 import type { NetEvent, NetProjectile, NetSnapshot, NetTrap } from './net/protocol';
 
@@ -1265,6 +1267,19 @@ export class Match implements World {
       ctx.fillRect(0, 0, this.viewW, this.viewH);
     }
     if (this.speedlines > 0 && !this.mods.reduceFlash) this.renderSpeedlines(ctx);
+
+    // ---- post processing: bloom + impact aberration ----
+    // Runs on the world layer only, BEFORE the HUD, so the UI stays crisp.
+    if (this.mods.quality !== 'low') {
+      const impact = clamp(this.koFlashTimer / 8, 0, 1);
+      applyPostFX(ctx, this.viewW, this.viewH, {
+        bloom: this.mods.quality === 'high' ? 0.5 : 0.3,
+        aberration: this.mods.reduceFlash ? 0 : impact * 0.9,
+        dpr: cam.dpr,
+      });
+      ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
+    }
+
     this.renderVignette(ctx);
     this.renderHUD(ctx);
   }
@@ -1274,16 +1289,12 @@ export class Match implements World {
     const W = this.viewW, H = this.viewH;
     if (this.mods.quality === 'low') return;
     ctx.save();
-    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.78);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(1, 'rgba(2,2,10,0.42)');
-    ctx.fillStyle = g;
+    ctx.fillStyle = cachedRadial(ctx, W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.78,
+      [[0, 'rgba(0,0,0,0)'], [1, 'rgba(2,2,10,0.42)']]);
     ctx.fillRect(0, 0, W, H);
     // soft top darkening for HUD readability
-    const top = ctx.createLinearGradient(0, 0, 0, H * 0.2);
-    top.addColorStop(0, 'rgba(2,2,12,0.3)');
-    top.addColorStop(1, 'rgba(2,2,12,0)');
-    ctx.fillStyle = top;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, H * 0.2,
+      [[0, 'rgba(2,2,12,0.3)'], [1, 'rgba(2,2,12,0)']]);
     ctx.fillRect(0, 0, W, H * 0.2);
     ctx.restore();
   }
@@ -1566,10 +1577,8 @@ export class Match implements World {
     roundRect(ctx, 4, 6, cardW, cardH, 8);
     ctx.fill();
     // body gradient
-    const bg = ctx.createLinearGradient(0, 0, 0, cardH);
-    bg.addColorStop(0, 'rgba(16,15,34,0.92)');
-    bg.addColorStop(1, 'rgba(8,8,20,0.94)');
-    ctx.fillStyle = bg;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, cardH,
+      [[0, 'rgba(16,15,34,0.92)'], [1, 'rgba(8,8,20,0.94)']]);
     roundRect(ctx, 0, 0, cardW, cardH, 8);
     ctx.fill();
     // team color spine

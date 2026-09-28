@@ -58,6 +58,61 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
 
+/**
+ * A 2D context that records call counts instead of rasterising. Used by the
+ * render smoke test: it implements enough of the real API surface that a
+ * genuine renderer bug throws rather than silently no-opping.
+ */
+export function recordingCanvas() {
+  const canvas = new HeadlessCanvas();
+  canvas.width = 1280;
+  canvas.height = 720;
+  const state = { __calls: 0, __gradients: 0 };
+  const gradient = () => ({
+    addColorStop(stop, color) {
+      if (typeof stop !== 'number' || Number.isNaN(stop)) throw new Error(`bad gradient stop: ${stop}`);
+      if (typeof color !== 'string' || color === 'undefined' || color.includes('undefined') || color.includes('NaN')) {
+        throw new Error(`bad gradient colour: ${color}`);
+      }
+    },
+  });
+  const noop = () => { state.__calls++; };
+  const target = {
+    canvas,
+    get __calls() { return state.__calls; },
+    get __gradients() { return state.__gradients; },
+    __resetCounters() { state.__calls = 0; state.__gradients = 0; },
+    createLinearGradient: () => { state.__calls++; state.__gradients++; return gradient(); },
+    createRadialGradient: () => { state.__calls++; state.__gradients++; return gradient(); },
+    createPattern: () => { state.__calls++; return null; },
+    measureText: () => ({ width: 10 }),
+    getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h }),
+    putImageData: noop,
+    drawImage(img) {
+      state.__calls++;
+      if (!img) throw new Error('drawImage called with a null image');
+    },
+    setTransform: noop,
+    save: noop,
+    restore: noop,
+  };
+  const ctx = new Proxy(target, {
+    get(t, prop) {
+      if (prop in t) return t[prop];
+      return noop;
+    },
+    set(t, prop, value) {
+      if ((prop === 'fillStyle' || prop === 'strokeStyle') && typeof value === 'string'
+        && (value.includes('undefined') || value.includes('NaN'))) {
+        throw new Error(`invalid ${String(prop)}: ${value}`);
+      }
+      t[prop] = value;
+      return true;
+    },
+  });
+  return { canvas, ctx };
+}
+
 const { createJiti } = await import('jiti');
 const ROOT = new URL('../../', import.meta.url).pathname;
 

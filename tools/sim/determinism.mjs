@@ -6,7 +6,7 @@
 import { loadGame, BASE_MODS } from './env.mjs';
 
 const game = await loadGame();
-const { Match, AudioManager, FIGHTER_IDS, emptyInput } = game;
+const { Match, AudioManager, emptyInput } = game;
 
 const KEYS = ['left', 'right', 'up', 'down', 'jump', 'attack', 'special', 'grab', 'shield', 'dodge', 'dash'];
 

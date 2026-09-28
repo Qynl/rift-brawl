@@ -13,6 +13,7 @@ import { loadSave, saveSave } from '@/lib/game/core/save';
 import type { NetSession } from './RiftBrawl';
 import { net } from '@/lib/game/net/NetClient';
 import type { Match } from '@/lib/game/Match';
+import TouchControls from './TouchControls';
 
 interface Props {
   engine: GameEngine;
@@ -62,6 +63,10 @@ export default function GameScreen(props: Props) {
       engine.detach();
       delete (window as unknown as Record<string, unknown>).__rb;
     };
+    // Mount-once by design: this boots the engine's rAF loop and owns the
+    // canvas. Re-running it on prop changes would restart the match mid-game;
+    // live settings/config updates are pushed through the engine imperatively.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const winnerName = result
@@ -90,6 +95,9 @@ export default function GameScreen(props: Props) {
   return (
     <div className="relative w-full h-full bg-black">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
+
+      {/* TOUCH CONTROLS — auto-detects a coarse pointer; invisible on desktop */}
+      <TouchControls engine={engine} hidden={!!result || paused} />
 
       {/* PAUSE OVERLAY */}
       {!result && paused && (

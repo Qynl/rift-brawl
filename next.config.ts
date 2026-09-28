@@ -2,11 +2,14 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
+  // Type errors used to be ignored at build time, which meant a broken build
+  // could ship. `npm run typecheck` is clean, so the safety net is back on.
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
-  reactStrictMode: false,
+  // Double-invoked effects in development surface mount/unmount bugs in the
+  // engine attach/detach path early instead of in production.
+  reactStrictMode: true,
 };
 
 export default nextConfig;

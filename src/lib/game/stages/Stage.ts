@@ -1,7 +1,6 @@
 // ============ RIFT BRAWL — Base Stage & Collision ============
 
-import { PlatformDef, PlatformType, BlastZones, SpawnPoint, ChallengeModifiers } from '../core/types';
-import { clamp, rand } from '../core/constants';
+import { PlatformDef, BlastZones, SpawnPoint, ChallengeModifiers } from '../core/types';
 import { ParticleSystem } from '../effects/Particles';
 
 export interface BodyLike {
@@ -48,8 +47,6 @@ export interface StageHooks {
   drawFg?(ctx: CanvasRenderingContext2D, s: Stage, tick: number, camX: number, camY: number): void;
   onFighterUpdate?(s: Stage, f: BodyLike, tick: number, mods: ChallengeModifiers): void;
 }
-
-let platformIdCounter = 1;
 
 export class Stage {
   id: string;

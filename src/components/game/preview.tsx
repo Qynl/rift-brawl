@@ -48,15 +48,17 @@ export function useFighterPreview(
   fighterId: FighterId,
   opts?: { zoom?: number; facing?: 1 | -1; y?: number }
 ) {
+  // Lazily built inside the effect: reading/writing a ref during render is a
+  // React 19 violation (it breaks with concurrent rendering and StrictMode).
   const fighterRef = useRef<Fighter | null>(null);
-  if (!fighterRef.current || fighterRef.current.id !== fighterId) {
-    fighterRef.current = makePreviewFighter(fighterId, opts?.facing ?? 1);
-  }
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    if (!fighterRef.current || fighterRef.current.id !== fighterId) {
+      fighterRef.current = makePreviewFighter(fighterId, opts?.facing ?? 1);
+    }
     let raf = 0;
     let t = 0;
     const loop = () => {

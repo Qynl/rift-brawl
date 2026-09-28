@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AIDifficulty, AIPersonality, FighterId, GameSettings, MatchConfig, MatchResult,
-  ProfileData, TrainingDummy,
+  ProfileData,
 } from '@/lib/game/core/types';
 import { DEFAULT_PROFILE, DEFAULT_SETTINGS, loadSave, saveSave, wipeSave, updateFavorite } from '@/lib/game/core/save';
 import { GameEngine, } from '@/lib/game/Engine';
@@ -60,6 +60,7 @@ export default function RiftBrawl() {
   // ---- online state ----
   const [lobby, setLobby] = useState<LobbyState | null>(null);
   const [mySlot, setMySlot] = useState(-1);
+  const [onlineRequested, setOnlineRequested] = useState(false);
   const [netStatus, setNetStatus] = useState<NetStatus>('offline');
   const [netError, setNetError] = useState<string | null>(null);
   const [netSession, setNetSession] = useState<NetSession | null>(null);
@@ -77,18 +78,30 @@ export default function RiftBrawl() {
     if (loadedRef.current) return;
     loadedRef.current = true;
     const { settings: s, profile: p } = loadSave();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSettings(s);
     setProfile(p);
     engine.applySettings(s);
+    // `engine` comes from a useState initialiser and is stable for the life of
+    // the component, so re-running this on it would only re-read localStorage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- audio unlock + menu music ----
+  // The unlock listener is registered once but fires much later (first user
+  // gesture). Reading `settings`/`screen` from the closure would replay the
+  // DEFAULTS rather than whatever was loaded from the save, so the live values
+  // are read through refs instead.
+  const settingsRef = useRef(settings);
+  const screenRef = useRef(screen);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
+
   useEffect(() => {
     const unlock = () => {
+      const s = settingsRef.current;
       audio.ensure();
-      audio.setVolumes({ master: settings.masterVol, music: settings.musicVol, sfx: settings.sfxVol });
-      if (screen !== 'game') audio.playMusic('menu');
+      audio.setVolumes({ master: s.masterVol, music: s.musicVol, sfx: s.sfxVol });
+      if (screenRef.current !== 'game') audio.playMusic('menu');
     };
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
@@ -282,7 +295,11 @@ export default function RiftBrawl() {
 
   // ---------------- ONLINE ----------------
 
+  // The online transport is loaded and connected ONLY once the player asks for
+  // it (see `onlineRequested`). Connecting on mount pulled socket.io into the
+  // first paint for every offline player.
   useEffect(() => {
+    if (!onlineRequested) return;
     net.connect({
       onStatus: s => setNetStatus(s),
       onError: msg => setNetError(msg),
@@ -302,14 +319,14 @@ export default function RiftBrawl() {
       onMatchAborted: reason => {
         setNetSession(null);
         setOverlay('none');
-        setScreen(lobby ? 'online' : 'menu');
+        // read the live lobby, not the one captured when the handler was bound
+        setScreen(net.lobby ? 'online' : 'menu');
         setNetError(reason);
         audio.playMusic('menu');
       },
     });
     return () => { /* keep the connection alive for the session */ };
-     
-  }, []);
+  }, [onlineRequested]);
 
   const netCreate = (name: string) => {
     playerNameRef.current = name;
@@ -359,7 +376,7 @@ export default function RiftBrawl() {
   };
 
   const startMode = (m: Mode) => {
-    if (m === 'online') { setMode('online'); setScreen('online'); return; }
+    if (m === 'online') { setOnlineRequested(true); setMode('online'); setScreen('online'); return; }
     setMode(m);
     setArcade(null);
     setSurvivalWave(1);

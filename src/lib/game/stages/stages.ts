@@ -1,10 +1,8 @@
 // ============ RIFT BRAWL — Six Original Stages ============
 
 import { Stage, Platform, StageHooks } from './Stage';
-import { FighterId } from '../core/types';
 import { rand, chance, mulberry32 } from '../core/constants';
-import { ParticleSystem } from '../effects/Particles';
-import { cachedLinear, cachedRadial } from '../effects/gradientCache';
+import { cachedLinear } from '../effects/gradientCache';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -55,16 +53,6 @@ function neonRect(ctx: Ctx, x: number, y: number, w: number, h: number, color: s
   ctx.restore();
 }
 
-// platform top edge highlighting helper
-function platTop(ctx: Ctx, p: Platform, color: string, lineW = 3) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = lineW;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(p.cx + 4, p.cy + 1.5);
-  ctx.lineTo(p.cx + p.w - 4, p.cy + 1.5);
-  ctx.stroke();
-}
 
 // crisp silhouette outline — the single biggest readability upgrade for platforms
 function outlineLast(ctx: Ctx, w = 3, color = 'rgba(6,9,16,0.85)') {

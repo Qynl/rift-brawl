@@ -3,10 +3,11 @@ import tailwindcssAnimate from "tailwindcss-animate";
 
 const config: Config = {
     darkMode: "class",
+    // The project lives under ./src — the previous globs matched nothing, so
+    // every utility class was coming from Tailwind v4's CSS-first scanning and
+    // this config's theme extension was silently inert for content detection.
     content: [
-    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
   	extend: {

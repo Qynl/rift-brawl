@@ -387,7 +387,7 @@ export class Match implements World {
     const q = this.remotePackets.get(i);
     if (q && q.length > 0) {
       // merge all packets that arrived this step
-      let held = { ...st.held }, pressed = { ...st.pressed };
+      const held = { ...st.held }, pressed = { ...st.pressed };
       for (const k of Object.keys(st.pressed) as (keyof typeof pressed)[]) pressed[k] = false;
       let ax = st.axisX, ay = st.axisY;
       for (const pkt of q) {

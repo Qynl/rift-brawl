@@ -2,12 +2,12 @@
 // Full platform-fighter physics + state machine. Data-driven moves per character.
 
 import {
-  ActionName, ChallengeModifiers, FighterId, FighterState, FighterStats, HitboxDef, InputState,
+  ChallengeModifiers, FighterId, FighterState, FighterStats, HitboxDef, InputState,
   MoveData, ThrowData, emptyInput,
 } from '../core/types';
 import { WeaponDef } from '../core/types';
 import {
-  clamp, KB_MAX, KB_WEIGHT_REF, HITSTOP_BASE, HITSTOP_PER_PCT, HITSTOP_MAX, PHYS, rand,
+  clamp, HITSTOP_BASE, HITSTOP_PER_PCT, HITSTOP_MAX, PHYS, rand,
   KB, SHIELD, TECH, DI, knockbackOf, hitstunOf, tumbles,
 } from '../core/constants';
 import { TraitSpec, TraitRuntime, newTraitRuntime, traitFor, HitContext } from './traits';
@@ -1252,7 +1252,7 @@ export class Fighter {
         if (f === m.startup) {
           const dir = input.axisX !== 0 ? (input.axisX > 0 ? 1 : -1) : this.facing;
           this.facing = dir;
-          let dx = dir * 170, dy = input.held.up ? -130 : (input.held.down ? 90 : -14);
+          const dx = dir * 170, dy = input.held.up ? -130 : (input.held.down ? 90 : -14);
           // simple obstruction check: step in increments
           const steps = 8;
           let fx = this.x, fy = this.y;

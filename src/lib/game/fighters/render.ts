@@ -532,7 +532,7 @@ function drawBody(
     ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.ellipse(ex + 1.5, ey, 4.6, 2.8, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   });
-  const backArm = limb(ctx, -3, shoulderY + 2, pose.armB[0], pose.armB[1], 10.5, 10, limbW * 0.85, shade(dark, 2), outline, (ex, ey, ang) => {
+  limb(ctx, -3, shoulderY + 2, pose.armB[0], pose.armB[1], 10.5, 10, limbW * 0.85, shade(dark, 2), outline, (ex, ey, ang) => {
     drawHand(ctx, f, ex, ey, ang, shade(dark, 14), false, tick);
   });
 
@@ -1702,7 +1702,6 @@ function drawWeapon(ctx: CanvasRenderingContext2D, f: Fighter, hx: number, hy: n
       ctx.strokeStyle = lg; ctx.lineWidth = 4.2;
       ctx.beginPath(); ctx.moveTo(hx - dx * 6, hy - dy * 6); ctx.lineTo(tipX - dx * L * 0.14, tipY - dy * L * 0.14); ctx.stroke();
       // conical spearhead — the longest reach in the rift
-      const tipA = a;
       const headLen = L * 0.2;
       const baseX = tipX - dx * headLen, baseY = tipY - dy * headLen;
       ctx.fillStyle = outline0();

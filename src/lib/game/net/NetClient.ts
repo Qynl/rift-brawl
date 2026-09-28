@@ -3,7 +3,7 @@
 
 'use client';
 
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import type { LobbyState, MatchStartMsg, NetSnapshot } from './protocol';
 import { ALL_ACTIONS } from '../core/types';
 
@@ -20,6 +20,18 @@ interface NetHandlers {
 
 class NetClient {
   private socket: Socket | null = null;
+  private connecting = false;
+
+  /**
+   * Lobby endpoint. Defaults to the same origin with the sandbox's port
+   * transform, but an explicit NEXT_PUBLIC_LOBBY_URL wins so a real deployment
+   * can point at a hosted relay instead of a hardcoded dev port.
+   */
+  private endpoint(): string {
+    const configured = process.env.NEXT_PUBLIC_LOBBY_URL;
+    if (configured) return configured;
+    return '/?XTransformPort=3003';
+  }
   private handlers: NetHandlers = {};
   private inputQueue: { h: number; p: number; ax: number; ay: number }[] = [];
   private snapQueue: NetSnapshot[] = [];
@@ -32,12 +44,30 @@ class NetClient {
   sentCount = 0;
   recvCount = 0;
 
-  connect(handlers: NetHandlers) {
-    if (this.socket) return;
+  /**
+   * Socket.io is ~45 KB gzipped and only ever needed if the player opens the
+   * ONLINE screen, yet it used to sit in the initial bundle for everyone.
+   * Loading it on demand keeps the offline game's first paint lean.
+   */
+  async connect(handlers: NetHandlers) {
+    if (this.socket || this.connecting) return;
+    this.connecting = true;
     this.handlers = handlers;
     this.status = 'connecting';
     handlers.onStatus?.('connecting');
-    const s = io('/?XTransformPort=3003', {
+    let io: typeof import('socket.io-client').io;
+    try {
+      ({ io } = await import('socket.io-client'));
+    } catch {
+      this.connecting = false;
+      this.status = 'offline';
+      handlers.onStatus?.('offline');
+      handlers.onError?.('Could not load the online module.');
+      return;
+    }
+    this.connecting = false;
+    if (this.socket) return;      // a second call resolved first
+    const s = io(this.endpoint(), {
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnection: true,

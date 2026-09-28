@@ -176,7 +176,6 @@ export function OnlineLobby({ lobby, mySlot, status, error, onBack, onCycleChar,
   onCopyCode(): void;
 }) {
   const isHost = lobby.hostSlot === mySlot;
-  const me = lobby.players.find(p => p.slot === mySlot);
   const [stage, setStage] = useState(STAGE_IDS[0]);
   const [stocks, setStocks] = useState(3);
   const canStart = isHost && lobby.players.length >= 2 && lobby.players.every(p => p.ready || p.slot === mySlot);

@@ -555,7 +555,7 @@ export class AIController {
         // Titan ground waves = his long-range game
         if (me.id === 'titan' && me.grounded && me.state !== 'attack' && me.specialCooldown === 0) {
           if (dist > 95 && dist < 270 && Math.abs(dy) < 42) {
-            let slamScore = 20 + (op.shielding ? 18 : 0) + (dist > 150 ? 8 : 0);
+            const slamScore = 20 + (op.shielding ? 18 : 0) + (dist > 150 ? 8 : 0);
             cands(slamScore * this.w('zone'), { type: 'special', dir: dirTo, dur: 34, elapsed: 0, kind: 'd', targetX: seen.x });
           }
           if (dist > 75 && dist < 190 && Math.abs(dy) < 40 && this.roomAhead(dirTo, 170, main)) {
@@ -681,7 +681,7 @@ export class AIController {
       case 'hook': {
         // grapple: yank shielded / distant opponents in, then punish
         if (dist > 70 && dist < 250 && Math.abs(dy) < 60 && (seen.shielding || chance(0.5))) {
-          let score = 17 + (seen.shielding ? 22 : 0) + this.habits.shields * 3 * this.diff.adapt;
+          const score = 17 + (seen.shielding ? 22 : 0) + this.habits.shields * 3 * this.diff.adapt;
           cands(score * this.w('grab') * 0.7, { type: 'special', dir: dirTo, dur: 36, elapsed: 0, kind: 's', targetX: seen.x });
         }
         break;

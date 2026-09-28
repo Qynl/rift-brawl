@@ -40,6 +40,39 @@ export class InputManager {
   private attached = false;
   onAnyKey?: (code: string) => void; // used by keybind remap capture
 
+  /**
+   * TOUCH LAYER. The game had no mobile input at all: keyboard and gamepad
+   * only. Touch controls write into this virtual button set, which is OR-ed
+   * with hardware in poll(), so a phone player and a keyboard player drive the
+   * exact same InputState and the simulation never learns the difference.
+   */
+  touch: Record<ActionName, boolean> = Object.fromEntries(ALL_ACTIONS.map(a => [a, false])) as Record<ActionName, boolean>;
+  /** analog stick from a virtual thumbstick, -1..1; overrides digital axes when non-zero */
+  touchAxis = { x: 0, y: 0 };
+  touchActive = false;
+
+  setTouch(action: ActionName, on: boolean) {
+    this.touch[action] = on;
+    if (on) this.touchActive = true;
+  }
+
+  setTouchAxis(x: number, y: number) {
+    this.touchAxis.x = Math.max(-1, Math.min(1, x));
+    this.touchAxis.y = Math.max(-1, Math.min(1, y));
+    // drive the digital direction bits too, so every existing check keeps working
+    this.touch.left = this.touchAxis.x < -0.35;
+    this.touch.right = this.touchAxis.x > 0.35;
+    this.touch.up = this.touchAxis.y < -0.45;
+    this.touch.down = this.touchAxis.y > 0.45;
+    if (this.touchAxis.x || this.touchAxis.y) this.touchActive = true;
+  }
+
+  clearTouch() {
+    for (const a of ALL_ACTIONS) this.touch[a] = false;
+    this.touchAxis.x = 0;
+    this.touchAxis.y = 0;
+  }
+
   constructor() {
     this.p1Binds = { ...DEFAULT_KEYBINDS_P1 };
     this.p2Binds = { ...DEFAULT_KEYBINDS_P2 };
@@ -104,6 +137,8 @@ export class InputManager {
         // gamepad override/merge
         const slot = this.gamepadSlots[p];
         if (slot >= 0 && pads[slot]) on = on || this.readGamepad(pads[slot], action);
+        // touch overlay (player 1 only — a phone has one pair of thumbs)
+        if (p === 0 && this.touch[action]) on = true;
         const r = raw[action];
         if (on && !r.held) r.pressed = true;
         else r.pressed = false;
@@ -121,6 +156,11 @@ export class InputManager {
       }
       c.axisX = (h.right ? 1 : 0) - (h.left ? 1 : 0);
       c.axisY = (h.down ? 1 : 0) - (h.up ? 1 : 0);
+      if (p === 0 && (this.touchAxis.x || this.touchAxis.y)) {
+        // analog stick wins: it carries magnitude the digital bits cannot
+        if (Math.abs(this.touchAxis.x) > 0.2) c.axisX = this.touchAxis.x;
+        if (Math.abs(this.touchAxis.y) > 0.2) c.axisY = this.touchAxis.y;
+      }
     }
   }
 

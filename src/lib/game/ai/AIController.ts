@@ -28,6 +28,19 @@ interface Plan {
   fired?: boolean;
 }
 
+/**
+ * Difficulty is split in two.
+ *
+ * `DiffParams` are the *analogue* knobs — how fast the bot perceives, how noisy
+ * its scoring is, how well it executes. On their own they only ever changed the
+ * pace of a match, which is why every difficulty used to feel the same.
+ *
+ * `DiffCaps` are the *capability gates* — whole techniques a bot is simply not
+ * allowed to use. An easy bot cannot survival-DI, cannot tech, never chases a
+ * recovery and never punishes a whiff; an expert bot does all of that plus
+ * ledge traps and out-of-shield punishes. Difficulty therefore changes which
+ * game the bot is playing, not just how quickly it plays it.
+ */
 interface DiffParams {
   react: number;     // perception delay frames
   interval: number;  // min frames between decisions
@@ -38,13 +51,37 @@ interface DiffParams {
   aggr: number;      // aggression multiplier
   aimErr: number;    // projectile aim error px
   defend: number;    // reaction defense probability
+  caps: DiffCaps;
 }
 
+interface DiffCaps {
+  di: boolean;          // survival DI out of launches
+  tech: boolean;        // teching on impact
+  punish: boolean;      // whiff / landing punishment
+  combo: boolean;       // follow-up routing while the foe is comboable
+  killConfirm: boolean; // recognising and going for kill percent
+  edgeguard: boolean;   // contesting a recovery from the ledge
+  oos: boolean;         // out-of-shield punishment
+  ledgeTrap: boolean;   // covering ledge getup options
+}
+
+const CAPS: Record<AIDifficulty, DiffCaps> = {
+  // Plays the game, but only the neutral: swings, blocks sometimes, and lets
+  // every advantage state go.
+  easy:   { di: false, tech: false, punish: false, combo: false, killConfirm: false, edgeguard: false, oos: false, ledgeTrap: false },
+  // Survives properly and takes the free punishes it is handed.
+  normal: { di: true,  tech: true,  punish: true,  combo: false, killConfirm: false, edgeguard: false, oos: false, ledgeTrap: false },
+  // Converts: strings moves together, hunts kill percent, guards the ledge.
+  hard:   { di: true,  tech: true,  punish: true,  combo: true,  killConfirm: true,  edgeguard: true,  oos: true,  ledgeTrap: false },
+  // Everything, including taking away the opponent's escape options.
+  expert: { di: true,  tech: true,  punish: true,  combo: true,  killConfirm: true,  edgeguard: true,  oos: true,  ledgeTrap: true },
+};
+
 const DIFF: Record<AIDifficulty, DiffParams> = {
-  easy:   { react: 26, interval: 22, noise: 22, mistake: 0.30, tech: 0.25, adapt: 0,    aggr: 0.8,  aimErr: 55, defend: 0.22 },
-  normal: { react: 12, interval: 10, noise: 10, mistake: 0.12, tech: 0.68, adapt: 0.5,  aggr: 1.3,  aimErr: 24, defend: 0.55 },
-  hard:   { react: 8,  interval: 6,  noise: 5,  mistake: 0.05, tech: 0.88, adapt: 0.8,  aggr: 1.65, aimErr: 12, defend: 0.8 },
-  expert: { react: 4,  interval: 4,  noise: 1.5, mistake: 0.02, tech: 1,    adapt: 1,    aggr: 2.05, aimErr: 5,  defend: 0.95 },
+  easy:   { react: 26, interval: 22, noise: 22, mistake: 0.30, tech: 0.25, adapt: 0,    aggr: 0.8,  aimErr: 55, defend: 0.22, caps: CAPS.easy },
+  normal: { react: 12, interval: 10, noise: 10, mistake: 0.12, tech: 0.68, adapt: 0.5,  aggr: 1.3,  aimErr: 24, defend: 0.55, caps: CAPS.normal },
+  hard:   { react: 8,  interval: 6,  noise: 5,  mistake: 0.05, tech: 0.88, adapt: 0.8,  aggr: 1.65, aimErr: 12, defend: 0.8,  caps: CAPS.hard },
+  expert: { react: 3,  interval: 3,  noise: 1.5, mistake: 0.01, tech: 1,    adapt: 1,    aggr: 2.05, aimErr: 5,  defend: 0.95, caps: CAPS.expert },
 };
 
 // preferred engagement band [min, max] px per personality
@@ -179,6 +216,7 @@ export class AIController {
   idx: number;
   personality: AIPersonality;
   diff: DiffParams;
+  private caps: DiffCaps;
   private me: Fighter;
   private op: Fighter;
   private db: Record<string, MoveInfo>;
@@ -204,6 +242,7 @@ export class AIController {
     this.idx = idx;
     this.personality = personality;
     this.diff = DIFF[difficulty];
+    this.caps = this.diff.caps;
     this.me = match.fighters[idx];
     this.op = match.fighters[1 - idx] ?? match.fighters[0];
     this.db = buildMoveDB(this.me.id);
@@ -263,7 +302,7 @@ export class AIController {
       if (this.diX < 0) h.left = true; if (this.diX > 0) h.right = true;
       if (this.diY < 0) h.up = true; if (this.diY > 0) h.down = true;
       // TECH: press dodge right before ground impact (quality scales with difficulty)
-      if ((this.me.state === 'launch' || this.me.state === 'hitstun') && this.me.vy > 2.5) {
+      if (this.caps.tech && (this.me.state === 'launch' || this.me.state === 'hitstun') && this.me.vy > 2.5) {
         const frames = this.framesToGround();
         if (!this.techPlanned && frames >= 1 && frames <= 9 && chance(this.diff.tech * 0.85)) {
           this.techPlanned = true;
@@ -305,9 +344,13 @@ export class AIController {
         // made it back: drop the recovery plan immediately
         this.plan = { type: 'wait', dir: 0, dur: 2, elapsed: 0 };
       }
-      if (this.tryThreatReaction(seen, main)) {
+      if (this.tryOutOfShield(seen)) {
+        overrode = true;
+      } else if (this.tryThreatReaction(seen, main)) {
         overrode = true;
       } else if (this.tryPunish(seen, main)) {
+        overrode = true;
+      } else if (this.tryLedgeTrap(main)) {
         overrode = true;
       }
     }
@@ -408,6 +451,12 @@ export class AIController {
   private chooseDI(main: MainPlat | null) {
     const me = this.me;
     const q = this.diff.tech;
+    if (!this.caps.di) {
+      // No survival DI at all: flail in a random direction like a new player.
+      this.diX = chance(0.4) ? (chance(0.5) ? 1 : -1) : 0;
+      this.diY = 0;
+      return;
+    }
     const cx = main ? main.cx : 0;
     const toward = Math.sign(cx - me.x) || 1;
     const horiz = Math.abs(me.vx) > Math.abs(me.vy);
@@ -456,7 +505,8 @@ export class AIController {
     const canAct = !['attack', 'dodge', 'shield', 'grabbing', 'land'].includes(me.state) || me.state === 'air';
     const opVulnerable = (seen.state === 'attack' && seen.moveTotal > 0 && seen.moveFrame > seen.moveTotal * 0.55)
       || seen.state === 'land' || seen.state === 'dizzy';
-    const opInMyCombo = op.comboable && op.lastHitBy === me;
+    // Only bots with the combo capability are allowed to see advantage state.
+    const opInMyCombo = this.caps.combo && op.comboable && op.lastHitBy === me;
     const opNearEdge = Math.min(Math.abs(seen.x - main.cx0), Math.abs(main.cx1 - seen.x)) < 130;
     // HARD SAFETY: an opponent offstage is edge-guarded from the stage — never chased into the void
     const opOff = this.isOffstage(op, main);
@@ -489,7 +539,7 @@ export class AIController {
           if (kills) score += 66 + (opNearEdge ? 20 : 0);
           else if (info.kbg < 32 && info.startup <= 7) score += 36;   // true-combo links
           else score -= 20;                                            // launching ends the string
-        } else if (op.damage >= info.killAt - 20) {
+        } else if (this.caps.killConfirm && op.damage >= info.killAt - 20) {
           score += 42 + (opNearEdge ? 22 : 0);                         // kill move available
         }
         // whiff punish: prefer fast startups
@@ -569,7 +619,7 @@ export class AIController {
       }
 
       // ============ edge guard ============
-      if (opOff && me.grounded && me.state !== 'attack') {
+      if (this.caps.edgeguard && opOff && me.grounded && me.state !== 'attack') {
         const egWeight = this.w('attack') * (0.4 + this.diff.tech) * this.diff.aggr;
         cands(32 * egWeight, { type: 'edgeguard', dir: dirTo, dur: 46, elapsed: 0 });
       }
@@ -942,9 +992,92 @@ export class AIController {
     return true;
   }
 
+  /**
+   * Out-of-shield punishment (hard+). The moment shieldstun ends on a blocked
+   * move that is still in recovery, throw out the fastest thing that reaches.
+   * This is what makes shielding against a skilled bot a *trade*, not a free
+   * defensive option, and it is the single biggest reason hard/expert feel
+   * different from normal.
+   */
+  private tryOutOfShield(seen: Snap): boolean {
+    if (!this.caps.oos) return false;
+    const me = this.me;
+    if (!me.shielding || me.shieldStun > 1) return false;
+    if (seen.state !== 'attack' || !seen.moveId) return false;
+    const opInfo = this.db[seen.moveId];
+    // only punish a move we are actually plus against
+    const opRecovery = opInfo
+      ? seen.moveTotal - seen.moveFrame
+      : seen.moveTotal - seen.moveFrame;
+    if (opRecovery <= 2) return false;
+
+    const dx = seen.x - me.x;
+    const dist = Math.abs(dx);
+    let best: MoveInfo | null = null;
+    for (const info of Object.values(this.db)) {
+      if (info.projectile || info.counter || info.air) continue;
+      if (info.startup > opRecovery) continue;          // would not connect in time
+      if (dist > info.reachF + 16) continue;
+      if (!best || info.startup < best.startup || (info.startup === best.startup && info.dmg > best.dmg)) best = info;
+    }
+    // grab is the answer when they are too close to swing through
+    if (!best && dist < 52) {
+      this.plan = { type: 'grab', dir: (Math.sign(dx) || 1) as -1 | 0 | 1, dur: 20, elapsed: 0 };
+      this.decideTimer = this.diff.interval;
+      return true;
+    }
+    if (!best) return false;
+    if (!chance(0.55 + this.diff.tech * 0.45)) return false;
+    this.plan = { type: 'attack', dir: (Math.sign(dx) || 1) as -1 | 0 | 1, dur: best.total + 2, elapsed: 0, kind: best.id };
+    this.decideTimer = this.diff.interval;
+    return true;
+  }
+
+  /**
+   * Ledge trapping (expert only). Instead of walking up and getting hit by a
+   * getup attack, stand just outside the ledge's getup range and swing the
+   * moment the hang timer makes an option mandatory.
+   */
+  private tryLedgeTrap(main: MainPlat | null): boolean {
+    if (!this.caps.ledgeTrap || !main) return false;
+    const op = this.op;
+    if (op.state !== 'ledge') return false;
+    const me = this.me;
+    if (!me.grounded || me.state === 'attack' || me.state === 'hitstun') return false;
+
+    const mid = (main.cx0 + main.cx1) / 2;
+    const edgeX = op.x < mid ? main.cx0 : main.cx1;
+    const inward = edgeX === main.cx0 ? 1 : -1;
+    // 92px is outside getup-attack range but inside our own dash-in range
+    const standX = clamp(edgeX + inward * 92, main.cx0 + 26, main.cx1 - 26);
+    const d = standX - me.x;
+    if (Math.abs(d) > 18) {
+      this.plan = { type: 'move', dir: (Math.sign(d) || 1) as -1 | 0 | 1, dur: 8, elapsed: 0, targetX: standX };
+      return true;
+    }
+    // In position: the hang timer forces an option soon, so cover it.
+    const hung = 300 - op.ledgeTimer;
+    if (hung > 24 && chance(0.25 * this.diff.tech)) {
+      let best: MoveInfo | null = null;
+      for (const info of Object.values(this.db)) {
+        if (info.projectile || info.counter || info.air) continue;
+        if (info.reachF < 86) continue;
+        if (!best || info.dmg > best.dmg) best = info;
+      }
+      if (best) {
+        this.plan = { type: 'attack', dir: (-inward) as -1 | 0 | 1, dur: best.total + 2, elapsed: 0, kind: best.id };
+        this.decideTimer = this.diff.interval;
+        return true;
+      }
+    }
+    this.plan = { type: 'wait', dir: (-inward) as -1 | 0 | 1, dur: 4, elapsed: 0 };
+    return true;
+  }
+
   /** Whiff / landing punishment: attack into the opponent's vulnerable frames. */
   private tryPunish(seen: Snap, main: MainPlat | null): boolean {
     void main;
+    if (!this.caps.punish) return false;
     const me = this.me;
     if (me.state === 'attack' || me.state === 'dodge' || me.state === 'hitstun' || me.state === 'shield') return false;
     let window = 0;

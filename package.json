@@ -15,7 +15,8 @@
     "sim:render": "node tools/sim/render-smoke.mjs",
     "sim:autotune": "node tools/sim/autotune.mjs",
     "lobby": "node mini-services/lobby-service/server.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:frames && npm run sim:render"
+    "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:frames && npm run sim:render",
+    "sim:ladder": "node tools/sim/ladder.mjs"
   },
   "dependencies": {
     "@radix-ui/react-toast": "^1.2.14",

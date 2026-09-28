@@ -643,18 +643,18 @@ export const JAEGER: FighterConfig = {
 export interface BalanceTuning { dmg: number; kb: number; speed: number; weight: number }
 
 export const BALANCE: Record<string, BalanceTuning> = {
-  vanguard: { dmg: 0.95, kb: 0.95, speed: 0.99, weight: 0.97 },
-  ember:    { dmg: 1.33, kb: 1.37, speed: 1.12, weight: 1.18 },
-  hook:     { dmg: 1.14, kb: 1.16, speed: 1.04, weight: 1.06 },
-  titan:    { dmg: 0.78, kb: 0.72, speed: 0.90, weight: 0.86 },
-  nova:     { dmg: 1.10, kb: 1.12, speed: 1.05, weight: 1.07 },
-  volt:     { dmg: 1.14, kb: 1.19, speed: 1.02, weight: 1.09 },
-  frost:    { dmg: 0.94, kb: 0.91, speed: 0.98, weight: 0.95 },
-  wraith:   { dmg: 0.91, kb: 0.86, speed: 0.98, weight: 0.93 },
-  seraph:   { dmg: 0.85, kb: 0.82, speed: 0.94, weight: 0.92 },
-  viper:    { dmg: 0.82, kb: 0.81, speed: 0.92, weight: 0.90 },
-  tempest:  { dmg: 1.07, kb: 1.12, speed: 1.02, weight: 1.05 },
-  jaeger:   { dmg: 1.12, kb: 1.16, speed: 1.03, weight: 1.09 },
+  vanguard: { dmg: 0.96, kb: 0.96, speed: 0.99, weight: 0.97 },
+  ember:    { dmg: 1.31, kb: 1.36, speed: 1.12, weight: 1.18 },
+  hook:     { dmg: 1.13, kb: 1.16, speed: 1.05, weight: 1.06 },
+  titan:    { dmg: 0.76, kb: 0.72, speed: 0.90, weight: 0.85 },
+  nova:     { dmg: 1.09, kb: 1.13, speed: 1.05, weight: 1.09 },
+  volt:     { dmg: 1.12, kb: 1.18, speed: 1.02, weight: 1.11 },
+  frost:    { dmg: 0.95, kb: 0.92, speed: 0.99, weight: 0.94 },
+  wraith:   { dmg: 0.93, kb: 0.88, speed: 0.98, weight: 0.95 },
+  seraph:   { dmg: 0.87, kb: 0.84, speed: 0.94, weight: 0.94 },
+  viper:    { dmg: 0.81, kb: 0.80, speed: 0.92, weight: 0.88 },
+  tempest:  { dmg: 1.07, kb: 1.12, speed: 1.02, weight: 1.04 },
+  jaeger:   { dmg: 1.11, kb: 1.15, speed: 1.02, weight: 1.09 },
 };
 
 function tuneMove(m: MoveData, t: BalanceTuning): MoveData {

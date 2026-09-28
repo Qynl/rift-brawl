@@ -163,6 +163,7 @@ export const BASE_MODS = {
 export function runMatch(game, opts) {
   const {
     a, b, stage = 'forest', difficulty = 'hard', stocks = 3,
+    difficultyA = difficulty, difficultyB = difficulty,
     personalityA = 'balanced', personalityB = 'balanced',
     maxFrames = 60 * 60 * 5,
   } = opts;
@@ -170,8 +171,8 @@ export function runMatch(game, opts) {
   let result = null;
   const config = {
     players: [
-      { char: a, label: 'A', kind: 'ai', personality: personalityA, difficulty },
-      { char: b, label: 'B', kind: 'ai', personality: personalityB, difficulty },
+      { char: a, label: 'A', kind: 'ai', personality: personalityA, difficulty: difficultyA },
+      { char: b, label: 'B', kind: 'ai', personality: personalityB, difficulty: difficultyB },
     ],
     stocks,
     stageId: stage,

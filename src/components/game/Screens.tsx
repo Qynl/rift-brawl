@@ -9,6 +9,7 @@ import { FIGHTER_LIST } from '@/lib/game/fighters/configs';
 import { FighterId, AIPersonality, AIDifficulty, CharacterInfo } from '@/lib/game/core/types';
 import { STAGE_BUILDERS, STAGE_IDS, renderStagePreview } from '@/lib/game/stages/stages';
 import { audio } from '@/lib/game/audio/AudioManager';
+import { traitFor } from '@/lib/game/fighters/traits';
 
 // ---------------- shared bits ----------------
 
@@ -315,6 +316,34 @@ export function CharacterSelect({ mode, onConfirm, onBack, initial }: {
                   <StatBar label="Recovery" v={info.stats.recovery} color={info.colors.glow} />
                 </div>
                 <p className="text-[11px] text-white/55 leading-snug mt-2">{info.desc}</p>
+
+                {/* ---- SIGNATURE KIT: the mechanic that makes this brawler play differently ---- */}
+                {(() => {
+                  const trait = traitFor(info.id);
+                  return (
+                    <div
+                      className="mt-2.5 rounded-md border p-2.5"
+                      style={{ borderColor: trait.color + '44', background: trait.color + '0e' }}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span
+                          className="text-[9px] font-black tracking-[0.18em] px-1.5 py-0.5 rounded-sm"
+                          style={{ background: trait.color + '22', color: trait.color }}
+                        >
+                          {trait.label}
+                        </span>
+                        <span className="text-[11px] font-bold tracking-wide" style={{ color: trait.color }}>
+                          {trait.name}
+                        </span>
+                      </div>
+                      <p className="text-[10.5px] text-white/60 leading-snug">{trait.desc}</p>
+                      <p className="text-[10px] text-white/40 leading-snug mt-1">
+                        <span className="font-bold tracking-widest text-white/35">PASSIVE </span>
+                        {trait.passive}
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>

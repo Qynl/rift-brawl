@@ -6,7 +6,7 @@
 import { loadGame, runMatch } from './env.mjs';
 
 const difficulty = process.argv[2] || 'hard';
-const reps = Number(process.argv[3] || 2);
+const reps = Number(process.argv[3] || process.env.RB_PER_PAIR || 2);
 const BUDGET = Number(process.env.RB_WR_BUDGET || 26); // max allowed |WR - 50|
 
 const game = await loadGame();
@@ -80,6 +80,14 @@ const worst = Math.max(...rows.map((r) => Math.abs(r.wr - 50)));
 const avgCombo = rows.reduce((a, r) => a + r.combo, 0) / rows.length;
 console.log('  ' + '-'.repeat(70));
 console.log(`  spread ${spread.toFixed(1)} pts   worst deviation ${worst.toFixed(1)} (budget ${BUDGET})   avg best-combo ${avgCombo.toFixed(2)}   timeouts ${timeouts}\n`);
+
+// machine-readable output for the auto-tuner
+if (process.env.RB_JSON === '1') {
+  console.log(JSON.stringify({
+    rows: rows.map((r) => ({ id: r.id, win: r.wr, dmg: r.dmg, ko: r.kos, combo: r.combo })),
+    spread, worst, timeouts, matches: total,
+  }));
+}
 
 if (process.env.RB_ENFORCE === '1') {
   if (worst > BUDGET) { console.error('FAIL: win-rate budget exceeded'); process.exit(1); }

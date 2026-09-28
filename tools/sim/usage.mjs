@@ -89,7 +89,7 @@ Object.entries(moveUse).sort((a, b) => b[1] - a[1]).forEach(([k, v]) => {
 });
 
 const unused = [];
-for (const id of ['jab', 'fattack', 'uattack', 'dattack', 'fsmash', 'usmash', 'dsmash', 'nair', 'fair', 'bair', 'uair', 'dair', 'grab', 'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
+for (const id of ['jab', 'fattack', 'uattack', 'dattack', 'nair', 'fair', 'bair', 'uair', 'dair', 'grab', 'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
   if (!moveUse[id]) unused.push(id);
 }
 console.log(`\n  NEVER USED: ${unused.length ? unused.join(', ') : '(none)'}\n`);

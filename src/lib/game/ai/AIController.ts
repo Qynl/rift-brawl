@@ -5,7 +5,7 @@
 // and statistical adaptation. Plays through the same virtual input interface as a human.
 
 import { InputState, AIPersonality, AIDifficulty, ActionName, FighterId } from '../core/types';
-import { clamp, chance, rand, pick } from '../core/constants';
+import { clamp, chance, rand, pick, knockbackOf } from '../core/constants';
 import { FIGHTER_CONFIGS } from '../fighters/configs';
 import type { Match } from '../Match';
 import type { Fighter } from '../fighters/Fighter';
@@ -125,10 +125,16 @@ function buildMoveDB(id: FighterId): Record<string, MoveInfo> {
     if (m.mobility) {
       for (const imp of m.mobility) if (imp.vx) mobilityRange += Math.abs(imp.vx) * 10;
     }
-    // estimated KO% for a 100-weight opponent from midstage
+    // Estimated KO% for a 100-weight opponent from midstage.
+    // Solved numerically against the SHARED knockback model rather than an
+    // open-coded approximation, so the AI's kill reads stay correct whenever
+    // the combat constants are retuned.
     const horiz = Math.abs(Math.cos(m.angle * Math.PI / 180)) >= 0.6;
     const koKB = horiz ? 24 : 27;
-    const killAt = m.bkb <= 0 ? 400 : clamp((koKB * 100 / 57 - m.bkb) / (m.kbg * 0.009), 0, 400);
+    let killAt = 400;
+    for (let pct = 0; pct <= 400; pct += 5) {
+      if (knockbackOf(pct + m.damage, m.damage, m.bkb, m.kbg, 100) >= koKB) { killAt = pct; break; }
+    }
     // slot from move id
     let slot: MoveInfo['slot'] = 'n';
     if (key.startsWith('f') && key !== 'fair') slot = 'f';
@@ -515,7 +521,18 @@ export class AIController {
       }
 
       // ============ specials playbook (per character) ============
-      this.specialCandidates(seen, main, cands, dist, dy, dirTo);
+      // Wrap the playbook so every special candidate is scaled by whether the
+      // fighter's signature resource can actually pay for it.
+      const kitCands = (score: number, plan: Plan) => {
+        const mul = plan.type === 'special' ? this.kitReadiness((plan.kind as 'n' | 's' | 'u' | 'd') ?? 'n') : 1;
+        cands(score * mul, plan);
+      };
+      this.specialCandidates(seen, main, kitCands, dist, dy, dirTo);
+
+      // ============ kit-driven shield holding (Jaeger reload) ============
+      if (me.grounded && this.wantsToHoldShield() && dist > 120 && me.shieldHp > me.shieldMax * 0.55) {
+        cands(34, { type: 'shield', dir: 0, dur: 46, elapsed: 0 });
+      }
 
       // ============ zoning / projectiles ============
       if (canAct) {
@@ -858,6 +875,31 @@ export class AIController {
 
   // ---------------- reactions ----------------
 
+  /**
+   * Does this fighter's signature resource make a special worth throwing right
+   * now? Nova and Jaeger fizzle when dry; Vanguard/Seraph/Volt/Wraith want to
+   * cash a full bar. Without this the AI spent kits it did not have.
+   */
+  private kitReadiness(slot: 'n' | 's' | 'u' | 'd'): number {
+    const t = this.me.trait;
+    switch (this.me.traitSpec.id) {
+      case 'starfall': return t.charges > 0 ? 1.15 : 0.25;          // out of stars = fizzle
+      case 'ammo': return t.charges > 0 ? 1.15 : 0.3;               // dry click
+      case 'aegis': return t.meter >= 1 ? 1.9 : 1;                  // cash the empowered special
+      case 'radiance': return t.meter >= 1 && !t.active ? 2.4 : 1;  // ASCEND as soon as it is up
+      case 'siphon': return slot === 'd' && t.meter >= 0.5 ? 1.7 : 1;
+      case 'overheat': return t.active ? 1.25 : 1;
+      case 'static': return t.meter >= 1 ? 1.3 : 1;
+      case 'gale': return t.charges > 0 ? 1.1 : 0.9;
+      default: return 1;
+    }
+  }
+
+  /** True when the kit wants us to sit in shield (Jaeger reloads by blocking). */
+  private wantsToHoldShield(): boolean {
+    return this.me.traitSpec.id === 'ammo' && this.me.trait.charges <= 1;
+  }
+
   /** React to an incoming attack with shield / dodge / counter — once per attack instance. */
   private tryThreatReaction(seen: Snap, main: MainPlat | null): boolean {
     const me = this.me;
@@ -877,7 +919,14 @@ export class AIController {
     if (!chance(this.diff.defend * clamp(this.w('defend'), 0.35, 1.7))) return false;
 
     const opts: Plan[] = [];
-    if (!grabThreat) opts.push({ type: 'shield', dir: 0, dur: rand(14, 28) | 0, elapsed: 0 });
+    if (!grabThreat) {
+      // Shield is now a real option: it has finite HP, but blocking buys an
+      // out-of-shield punish and a parry on a tight read. Skilled AI raises it
+      // late (into the parry window) and drops it quickly.
+      const tight = chance(this.diff.tech * 0.55) && framesUntilHit <= 6;
+      opts.push({ type: 'shield', dir: 0, dur: tight ? rand(8, 14) | 0 : rand(16, 30) | 0, elapsed: 0 });
+      if (tight) opts.push({ type: 'shield', dir: 0, dur: rand(8, 12) | 0, elapsed: 0 }); // weight the parry attempt
+    }
     opts.push({ type: 'dodge', dir: 0, dur: 24, elapsed: 0 });                    // spot dodge
     opts.push({ type: 'dodge', dir: -Math.sign(seen.x - me.x) || 1, dur: 26, elapsed: 0 }); // roll away
     if (me.grounded) opts.push({ type: 'jump', dir: -Math.sign(seen.x - me.x) || 1, dur: 18, elapsed: 0 });

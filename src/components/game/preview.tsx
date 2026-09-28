@@ -24,13 +24,17 @@ export function makePreviewFighter(id: FighterId, facing: 1 | -1 = 1): Fighter {
     mods: {
       lowGravity: false, giant: false, tinyArena: false, oneHitKO: false, highKnockback: false,
       infiniteSpecials: false, movingPlatforms: false, chaosHazards: false,
-      reduceFlash: false, particleQ: 0, showFps: false, quality: 'high',
     },
-    fighters: [] as unknown as [Fighter, Fighter],
-    shake() { }, flash() { }, punchZoom() { },
+    // NOTE: this must implement the FULL World interface. It used to be an
+    // `as unknown as World` cast that silently omitted five spawn hooks, so any
+    // preview fighter that ran a trap special would throw inside a rAF loop.
+    fighters: [] as Fighter[],
+    shake() { }, flash() { }, punchZoom() { }, emitSfx() { },
     spawnProjectile() { }, spawnTrap() { },
+    spawnVoidSpikes() { }, spawnVenomCloud() { }, spawnLightWard() { }, spawnBearTrap() { },
+    onSwing() { },
     onHitConnect() { }, onCounterSuccess() { }, onShieldBreak() { },
-  } as unknown as World;
+  } satisfies World;
   const f = new Fighter(FIGHTER_CONFIGS[id], 0, world, '');
   f.facing = facing;
   f.grounded = true;

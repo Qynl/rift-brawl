@@ -1,5 +1,7 @@
 # RIFT BRAWL
 
+**[▶ Play it](https://qynl.github.io/rift-brawl/)** · [Deploy your own](docs/DEPLOY.md) · [What shipped](docs/PROGRESS.md)
+
 An original browser platform-fighter — percent-based knockback instead of health bars, stocks, 12 unique brawlers with signature weapons, 6 handcrafted stages, a utility-driven AI, and online lobby play with room codes for up to 4 players.
 
 Built with **Next.js, TypeScript and Canvas**. All characters, art and audio are original — every sound effect is synthesized at runtime with the Web Audio API, no external assets.
@@ -44,6 +46,29 @@ npm install
 # run the game
 npm run dev        # → http://localhost:3000
 ```
+
+### Building and hosting it
+
+RIFT BRAWL is a **static site** — no server, no database, no API. The build is a
+folder of files any host will serve, and once the service worker has cached the
+shell it keeps working offline.
+
+```bash
+npm run build      # → out/   static export
+npm start          # serve out/ on http://0.0.0.0:3000
+```
+
+| Target | How |
+| --- | --- |
+| **GitHub Pages** | Already wired up — an admin flips Settings → Pages → Source → "GitHub Actions" once, then every push to `main` publishes to `https://<owner>.github.io/<repo>/`. |
+| **Netlify** | Drag `out/` onto [app.netlify.com/drop](https://app.netlify.com/drop), or connect the repo (`netlify.toml` is committed). |
+| **Vercel** | `npx vercel --prod` (`vercel.json` is committed). |
+| **Docker** | `docker compose up --build` brings up the game on `:3000` and the lobby relay on `:3003`. |
+| **Anything else** | Upload `out/`. |
+
+Serving from a sub-directory needs `NEXT_PUBLIC_BASE_PATH=/your-path` at build
+time. Full details, including the cache headers worth setting, are in
+[docs/DEPLOY.md](docs/DEPLOY.md).
 
 ### Online lobby service
 

@@ -9,14 +9,20 @@
 //   static      -> stale-while-revalidate, so updates land without a hard reload
 //   everything else (lobby sockets, cross-origin) is never touched.
 
-const VERSION = 'rift-brawl-v1';
-const SHELL = '/';
+const VERSION = 'rift-brawl-v2';
+
+// The worker is served from wherever the site is deployed, which may be a
+// sub-directory (a GitHub project page is /<repo>/). Its own registration
+// scope is the single source of truth for that, so nothing here is hardcoded
+// to the root and the same file works on every host.
+const BASE = new URL('./', self.location).pathname;
+const SHELL = BASE;
 const PRECACHE = [
-  '/',
-  '/manifest.webmanifest',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/favicon.ico',
+  BASE,
+  BASE + 'manifest.webmanifest',
+  BASE + 'icon-192.png',
+  BASE + 'icon-512.png',
+  BASE + 'favicon.ico',
 ];
 
 self.addEventListener('install', (event) => {
@@ -36,9 +42,11 @@ self.addEventListener('activate', (event) => {
 });
 
 function isStatic(url) {
-  return url.pathname.startsWith('/_next/static/')
-    || url.pathname.startsWith('/icon-')
-    || /\.(png|jpg|jpeg|svg|ico|webmanifest|woff2?)$/.test(url.pathname);
+  if (!url.pathname.startsWith(BASE)) return false;
+  const rel = url.pathname.slice(BASE.length);
+  return rel.startsWith('_next/static/')
+    || rel.startsWith('icon-')
+    || /\.(png|jpg|jpeg|svg|ico|webmanifest|woff2?)$/.test(rel);
 }
 
 self.addEventListener('fetch', (event) => {

@@ -146,6 +146,32 @@ The same determinism is what makes rollback netcode feasible later.
 
 ---
 
+## Shipping it as a website
+
+The game is 100 % client-side, so the default build is now a **static export**: `npm run build`
+emits `out/`, a 1.9 MB folder that any host will serve, offline-capable once the service worker
+has cached the shell. `NEXT_OUTPUT=standalone` still produces a Node server build for anyone who
+wants one.
+
+- **Base-path aware end to end** — `NEXT_PUBLIC_BASE_PATH` feeds Next's `basePath`/`assetPrefix`,
+  the manifest uses relative `./` URLs, and `sw.js` derives its scope from
+  `new URL('./', self.location)`. Verified by serving the build from a `/rift-brawl/` sub-path.
+- **`tools/serve.mjs`** — a zero-dependency static server with the right cache headers
+  (immutable for `/_next/static/*`, `no-cache` for `sw.js`), a path-traversal guard and a 404
+  fallback. It is what `npm start` and the Docker image run.
+- **Deploy paths committed** — a GitHub Pages workflow that gates on typecheck + determinism +
+  render smoke before publishing, plus `netlify.toml`, `vercel.json`, a `Dockerfile` and a
+  `docker-compose.yml` that brings up the game and the lobby relay together.
+- **Website-grade presentation** — `VideoGame` JSON-LD, a `<noscript>` description of the game
+  for crawlers and no-JS visitors, `sitemap.xml`, and a `robots.txt` that points at it. OpenGraph
+  and Twitter cards resolve against `NEXT_PUBLIC_SITE_URL`, so shared links unfurl properly.
+
+Online play is the only piece that needs a backend. Without `NEXT_PUBLIC_LOBBY_URL` the online
+menu reports no server and everything else — single player, local versus, arcade, survival,
+training, challenges, replays — works unchanged. See `docs/DEPLOY.md`.
+
+---
+
 ## Still open
 
 - **Rollback netcode.** The relay is host-authoritative at 30 Hz with interpolation, so remote

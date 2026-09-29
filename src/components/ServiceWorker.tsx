@@ -21,7 +21,8 @@ export default function ServiceWorker() {
     let cancelled = false;
     const register = () => {
       if (cancelled) return;
-      navigator.serviceWorker.register('/sw.js').catch(() => {
+      const base = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+      navigator.serviceWorker.register(`${base}/sw.js`, { scope: `${base}/` }).catch(() => {
         // A failed registration must never break the game.
       });
     };

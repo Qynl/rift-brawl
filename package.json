@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
-    "start": "NODE_ENV=production node .next/standalone/server.js",
+    "build": "next build",
+    "start": "node tools/serve.mjs",
     "lint": "eslint .",
     "sim:balance": "node tools/sim/balance.mjs",
     "sim:frames": "node tools/sim/frames.mjs",
@@ -18,7 +18,10 @@
     "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:replay && npm run sim:frames && npm run sim:render",
     "sim:ladder": "node tools/sim/ladder.mjs",
     "sim:replay": "node tools/sim/replay.mjs",
-    "sim:shot": "node tools/sim/shot.mjs"
+    "sim:shot": "node tools/sim/shot.mjs",
+    "build:pages": "NEXT_PUBLIC_BASE_PATH=/rift-brawl NEXT_PUBLIC_SITE_URL=https://qynl.github.io/rift-brawl next build",
+    "build:server": "NEXT_OUTPUT=standalone next build",
+    "start:server": "node .next/standalone/server.js"
   },
   "dependencies": {
     "next": "^16.1.1",

@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AIDifficulty, AIPersonality, FighterId, GameSettings, MatchConfig, MatchResult,
-  ProfileData, TrainingDummy,
+  ProfileData,
 } from '@/lib/game/core/types';
 import { DEFAULT_PROFILE, DEFAULT_SETTINGS, loadSave, saveSave, wipeSave, updateFavorite } from '@/lib/game/core/save';
 import { GameEngine, } from '@/lib/game/Engine';
@@ -17,11 +17,13 @@ import { FIGHTER_IDS } from '@/lib/game/fighters/configs';
 import { MainMenu, CharacterSelect, StageSelect, SelectResult } from './Screens';
 import { SettingsScreen, ProfileScreen, ChallengesScreen, HowToScreen } from './MetaScreens';
 import { OnlineBrowse, OnlineLobby, cycleChar } from './OnlineScreens';
+import ReplayScreen from './ReplayScreen';
+import type { ReplayData } from '@/lib/game/replay/format';
 import GameScreen from './GameScreen';
 import type { LobbyState, MatchStartMsg } from '@/lib/game/net/protocol';
 import { net, NetStatus } from '@/lib/game/net/NetClient';
 
-type Screen = 'menu' | 'select' | 'stage' | 'game' | 'settings' | 'profile' | 'challenges' | 'howto' | 'online';
+type Screen = 'menu' | 'select' | 'stage' | 'game' | 'settings' | 'profile' | 'challenges' | 'howto' | 'online' | 'replays';
 type Mode = 'quick' | 'arcade' | 'survival' | 'training' | 'local' | 'challenge' | 'online';
 
 export interface NetSession {
@@ -56,10 +58,14 @@ export default function RiftBrawl() {
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
   const [overlay, setOverlay] = useState<'none' | 'pause' | 'results'>('none');
   const [matchKey, setMatchKey] = useState(0); // force new match on restart
+  // ---- replay theatre ----
+  const [watching, setWatching] = useState<ReplayData | null>(null);
+  const watchingRef = useRef<ReplayData | null>(null);
 
   // ---- online state ----
   const [lobby, setLobby] = useState<LobbyState | null>(null);
   const [mySlot, setMySlot] = useState(-1);
+  const [onlineRequested, setOnlineRequested] = useState(false);
   const [netStatus, setNetStatus] = useState<NetStatus>('offline');
   const [netError, setNetError] = useState<string | null>(null);
   const [netSession, setNetSession] = useState<NetSession | null>(null);
@@ -77,18 +83,31 @@ export default function RiftBrawl() {
     if (loadedRef.current) return;
     loadedRef.current = true;
     const { settings: s, profile: p } = loadSave();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSettings(s);
     setProfile(p);
     engine.applySettings(s);
+    // `engine` comes from a useState initialiser and is stable for the life of
+    // the component, so re-running this on it would only re-read localStorage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- audio unlock + menu music ----
+  // The unlock listener is registered once but fires much later (first user
+  // gesture). Reading `settings`/`screen` from the closure would replay the
+  // DEFAULTS rather than whatever was loaded from the save, so the live values
+  // are read through refs instead.
+  const settingsRef = useRef(settings);
+  const screenRef = useRef(screen);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
+  useEffect(() => { watchingRef.current = watching; }, [watching]);
+
   useEffect(() => {
     const unlock = () => {
+      const s = settingsRef.current;
       audio.ensure();
-      audio.setVolumes({ master: settings.masterVol, music: settings.musicVol, sfx: settings.sfxVol });
-      if (screen !== 'game') audio.playMusic('menu');
+      audio.setVolumes({ master: s.masterVol, music: s.musicVol, sfx: s.sfxVol });
+      if (screenRef.current !== 'game') audio.playMusic('menu');
     };
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
@@ -198,6 +217,8 @@ export default function RiftBrawl() {
   const handleMatchEnd = useCallback((result: MatchResult) => {
     setLastResult(result);
     setOverlay('results');
+    // Watching a recording must never touch career stats.
+    if (watchingRef.current) { audio.playMusic('results'); return; }
     // update profile
     setProfile(prev => {
       const p: ProfileData = JSON.parse(JSON.stringify(prev));
@@ -227,7 +248,7 @@ export default function RiftBrawl() {
 
   // ---- flow actions ----
 
-  const goMenu = () => { setOverlay('none'); setScreen('menu'); setArcade(null); audio.playMusic('menu'); };
+  const goMenu = () => { setOverlay('none'); setScreen('menu'); setArcade(null); setWatching(null); audio.playMusic('menu'); };
 
   const startRematch = () => {
     setOverlay('none');
@@ -282,7 +303,11 @@ export default function RiftBrawl() {
 
   // ---------------- ONLINE ----------------
 
+  // The online transport is loaded and connected ONLY once the player asks for
+  // it (see `onlineRequested`). Connecting on mount pulled socket.io into the
+  // first paint for every offline player.
   useEffect(() => {
+    if (!onlineRequested) return;
     net.connect({
       onStatus: s => setNetStatus(s),
       onError: msg => setNetError(msg),
@@ -302,14 +327,14 @@ export default function RiftBrawl() {
       onMatchAborted: reason => {
         setNetSession(null);
         setOverlay('none');
-        setScreen(lobby ? 'online' : 'menu');
+        // read the live lobby, not the one captured when the handler was bound
+        setScreen(net.lobby ? 'online' : 'menu');
         setNetError(reason);
         audio.playMusic('menu');
       },
     });
     return () => { /* keep the connection alive for the session */ };
-     
-  }, []);
+  }, [onlineRequested]);
 
   const netCreate = (name: string) => {
     playerNameRef.current = name;
@@ -359,7 +384,7 @@ export default function RiftBrawl() {
   };
 
   const startMode = (m: Mode) => {
-    if (m === 'online') { setMode('online'); setScreen('online'); return; }
+    if (m === 'online') { setOnlineRequested(true); setMode('online'); setScreen('online'); return; }
     setMode(m);
     setArcade(null);
     setSurvivalWave(1);
@@ -376,6 +401,15 @@ export default function RiftBrawl() {
 
   // pause handling from engine ESC
   const handlePauseRequest = useCallback(() => {
+    // Escape during a replay leaves the theatre rather than opening a pause
+    // menu full of actions (restart, rematch) that make no sense here.
+    if (watchingRef.current) {
+      setWatching(null);
+      setOverlay('none');
+      setScreen('replays');
+      audio.playMusic('menu');
+      return;
+    }
     setOverlay(o => (o === 'none' ? 'pause' : o));
   }, []);
 
@@ -408,7 +442,8 @@ export default function RiftBrawl() {
       stageId: netSession.start.stageId,
     };
   }
-  const cfg = inGame ? (netCfg ?? pendingConfig ?? currentMatchConfig()) : null;
+  // A replay carries the exact config it was recorded with.
+  const cfg = inGame ? (watching?.meta.config ?? netCfg ?? pendingConfig ?? currentMatchConfig()) : null;
 
   return (
     <main className="fixed inset-0 select-none" role="application" aria-label="RIFT BRAWL game">
@@ -416,6 +451,7 @@ export default function RiftBrawl() {
         if (id === 'settings') setScreen('settings');
         else if (id === 'profile') setScreen('profile');
         else if (id === 'challenges') setScreen('challenges');
+        else if (id === 'replays') setScreen('replays');
         else if (id === 'howto') setScreen('howto');
         else startMode(id === 'play' ? 'quick' : (id as Mode));
       }} profile={{ wins: profile.wins, matches: profile.matches }} />}
@@ -504,6 +540,19 @@ export default function RiftBrawl() {
         )
       )}
 
+      {screen === 'replays' && (
+        <ReplayScreen
+          onBack={() => setScreen('menu')}
+          onWatch={(r) => {
+            setWatching(r);
+            setLastResult(null);
+            setOverlay('none');
+            setMatchKey(k => k + 1);
+            setScreen('game');
+          }}
+        />
+      )}
+
       {screen === 'game' && cfg && (
         <GameScreen
           key={matchKey}
@@ -529,6 +578,8 @@ export default function RiftBrawl() {
           onArcadeNext={arcadeNext}
           onSurvivalNext={survivalNext}
           onBackToLobby={netBackToLobby}
+          replay={watching}
+          onExitReplay={() => { setWatching(null); setOverlay('none'); setScreen('replays'); audio.playMusic('menu'); }}
         />
       )}
 

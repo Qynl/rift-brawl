@@ -35,9 +35,11 @@ All bindings are remappable in the in-game settings; gamepads work with the stan
 
 ## Getting started
 
+Requires Node 20+ (developed on Node 22).
+
 ```bash
 # install dependencies
-bun install        # or: npm install
+npm install
 
 # run the game
 npm run dev        # → http://localhost:3000
@@ -45,12 +47,33 @@ npm run dev        # → http://localhost:3000
 
 ### Online lobby service
 
-Online play (room codes, up to 4 players) runs through a small Socket.io service:
+Online play (room codes, up to 4 players) runs through a small Socket.io relay:
 
 ```bash
 cd mini-services/lobby-service
-bun install
-bun run dev        # lobby service on port 3003
+npm install
+npm run dev        # relay on :3003, health probe on :3004/healthz
+```
+
+Point the client at a relay other than the default with
+`NEXT_PUBLIC_LOBBY_URL=https://your-relay.example`. Socket.io itself is loaded
+lazily — it is only fetched when a player actually opens the online menu, so it
+stays out of the initial bundle.
+
+## Verification
+
+There is no browser test runner; instead the real engine is driven headlessly
+from Node (`tools/sim/`), which is what CI gates on.
+
+```bash
+npm run verify           # typecheck + lint + determinism + frame data + render smoke
+
+npm run sim:determinism  # identical inputs must produce byte-identical state
+npm run sim:frames       # startup/active/recovery + on-shield safety for all 164 moves
+npm run sim:render       # every fighter × stage × visual state, checking for throws
+npm run sim:balance      # AI round-robin win-rate spread (slow, noisy)
+npm run sim:usage        # which moves/mechanics the AI actually reaches for
+npm run sim:autotune     # searches the per-fighter BALANCE multipliers
 ```
 
 ## Project structure
@@ -62,7 +85,18 @@ src/lib/game/            # engine core: physics, combat, camera, save
   net/                   # lobby protocol + net client
   stages/                # stage definitions
   audio/                 # procedural Web Audio synth
-  effects/               # particles, slash FX, hit feedback
-src/components/game/     # UI screens: landing, select, HUD, lobby, results
-mini-services/           # Socket.io lobby service for online play
+  effects/               # particles, glow sprites, gradient cache, post-processing
+src/components/game/     # UI screens: landing, select, HUD, lobby, results, touch pad
+mini-services/           # Socket.io lobby relay for online play
+tools/sim/               # headless simulation harness (determinism, frames, balance)
+docs/IMPROVEMENT-PLAN.md # audit + roadmap, with implementation status
 ```
+
+## Touch
+
+On coarse-pointer devices an on-screen layer appears automatically: a floating
+analog thumbstick on the left (it re-centres wherever your thumb lands), the
+attack/special/jump/grab cluster on the right, and a shield/dodge/dash strip
+above it. It is driven by pointer events rather than clicks, so chords like
+shield + attack work, and every virtual button is released on blur so inputs
+can never stick.

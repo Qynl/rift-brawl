@@ -624,24 +624,105 @@ export const JAEGER: FighterConfig = {
   throws: jaegerThrows,
 };
 
+// ============================================================================
+//  BALANCE TUNING LAYER
+// ============================================================================
+//  The move tables above are the DESIGN: what a character does, how it feels,
+//  what its animations are. This table is the TUNING: a single multiplier set
+//  per fighter, derived from the offline round-robin harness in tools/sim.
+//
+//  Keeping them separate means a balance patch never touches hand-authored
+//  frame data, and `npm run sim:balance` can attribute every win-rate change to
+//  exactly one number per character.
+//
+//  dmg/kb    scale every hitbox, projectile and throw the fighter owns
+//  speed     scales ground + air + dash movement
+//  weight    survivability (higher = harder to launch)
+// ============================================================================
+
+export interface BalanceTuning { dmg: number; kb: number; speed: number; weight: number }
+
+export const BALANCE: Record<string, BalanceTuning> = {
+  vanguard: { dmg: 0.96, kb: 0.96, speed: 0.99, weight: 0.97 },
+  ember:    { dmg: 1.31, kb: 1.36, speed: 1.12, weight: 1.18 },
+  hook:     { dmg: 1.13, kb: 1.16, speed: 1.05, weight: 1.06 },
+  titan:    { dmg: 0.76, kb: 0.72, speed: 0.90, weight: 0.85 },
+  nova:     { dmg: 1.09, kb: 1.13, speed: 1.05, weight: 1.09 },
+  volt:     { dmg: 1.12, kb: 1.18, speed: 1.02, weight: 1.11 },
+  frost:    { dmg: 0.95, kb: 0.92, speed: 0.99, weight: 0.94 },
+  wraith:   { dmg: 0.93, kb: 0.88, speed: 0.98, weight: 0.95 },
+  seraph:   { dmg: 0.87, kb: 0.84, speed: 0.94, weight: 0.94 },
+  viper:    { dmg: 0.81, kb: 0.80, speed: 0.92, weight: 0.88 },
+  tempest:  { dmg: 1.07, kb: 1.12, speed: 1.02, weight: 1.04 },
+  jaeger:   { dmg: 1.11, kb: 1.15, speed: 1.02, weight: 1.09 },
+};
+
+function tuneMove(m: MoveData, t: BalanceTuning): MoveData {
+  if (t.dmg === 1 && t.kb === 1) return m;
+  return {
+    ...m,
+    damage: m.damage * t.dmg,
+    bkb: m.bkb * t.kb,
+    kbg: m.kbg * t.kb,
+    hitboxes: m.hitboxes?.map(h => ({
+      ...h,
+      dmg: h.dmg !== undefined ? h.dmg * t.dmg : undefined,
+      bkb: h.bkb !== undefined ? h.bkb * t.kb : undefined,
+      kbg: h.kbg !== undefined ? h.kbg * t.kb : undefined,
+    })),
+    projectile: m.projectile
+      ? { ...m.projectile, dmg: m.projectile.dmg * t.dmg, bkb: m.projectile.bkb * t.kb, kbg: m.projectile.kbg * t.kb }
+      : undefined,
+  };
+}
+
+function tune(cfg: FighterConfig): FighterConfig {
+  const t = BALANCE[cfg.info.id];
+  if (!t) return cfg;
+  const moves: Record<string, MoveData> = {};
+  for (const k of Object.keys(cfg.moves)) moves[k] = tuneMove(cfg.moves[k], t);
+  const th = cfg.throws;
+  return {
+    ...cfg,
+    stats: {
+      ...cfg.stats,
+      weight: cfg.stats.weight * t.weight,
+      groundSpeed: cfg.stats.groundSpeed * t.speed,
+      airSpeed: cfg.stats.airSpeed * t.speed,
+      dashSpeed: cfg.stats.dashSpeed * t.speed,
+    },
+    moves,
+    throws: th ? {
+      f: { ...th.f, dmg: th.f.dmg * t.dmg, bkb: th.f.bkb * t.kb, kbg: th.f.kbg * t.kb },
+      b: { ...th.b, dmg: th.b.dmg * t.dmg, bkb: th.b.bkb * t.kb, kbg: th.b.kbg * t.kb },
+      u: { ...th.u, dmg: th.u.dmg * t.dmg, bkb: th.u.bkb * t.kb, kbg: th.u.kbg * t.kb },
+      d: { ...th.d, dmg: th.d.dmg * t.dmg, bkb: th.d.bkb * t.kb, kbg: th.d.kbg * t.kb },
+    } : th,
+  };
+}
+
 // ------------------------------------------------------------------
 
 import { FighterId } from '../core/types';
 export const FIGHTER_CONFIGS: Record<FighterId, FighterConfig> = {
-  vanguard: VANGUARD,
-  ember: EMBER,
-  hook: HOOK,
-  titan: TITAN,
-  nova: NOVA,
-  volt: VOLT,
-  frost: FROST,
-  wraith: WRAITH,
-  seraph: SERAPH,
-  viper: VIPER,
-  tempest: TEMPEST,
-  jaeger: JAEGER,
+  vanguard: tune(VANGUARD),
+  ember: tune(EMBER),
+  hook: tune(HOOK),
+  titan: tune(TITAN),
+  nova: tune(NOVA),
+  volt: tune(VOLT),
+  frost: tune(FROST),
+  wraith: tune(WRAITH),
+  seraph: tune(SERAPH),
+  viper: tune(VIPER),
+  tempest: tune(TEMPEST),
+  jaeger: tune(JAEGER),
 };
 
-export const FIGHTER_LIST: FighterConfig[] = [VANGUARD, EMBER, HOOK, TITAN, NOVA, VOLT, FROST, WRAITH, SERAPH, VIPER, TEMPEST, JAEGER];
+export const FIGHTER_LIST: FighterConfig[] = [
+  FIGHTER_CONFIGS.vanguard, FIGHTER_CONFIGS.ember, FIGHTER_CONFIGS.hook, FIGHTER_CONFIGS.titan,
+  FIGHTER_CONFIGS.nova, FIGHTER_CONFIGS.volt, FIGHTER_CONFIGS.frost, FIGHTER_CONFIGS.wraith,
+  FIGHTER_CONFIGS.seraph, FIGHTER_CONFIGS.viper, FIGHTER_CONFIGS.tempest, FIGHTER_CONFIGS.jaeger,
+];
 
 export const FIGHTER_IDS: FighterId[] = FIGHTER_LIST.map(f => f.info.id);

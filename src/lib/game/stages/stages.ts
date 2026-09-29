@@ -1,18 +1,16 @@
 // ============ RIFT BRAWL — Six Original Stages ============
 
 import { Stage, Platform, StageHooks } from './Stage';
-import { FighterId } from '../core/types';
 import { rand, chance, mulberry32 } from '../core/constants';
-import { ParticleSystem } from '../effects/Particles';
+import { cachedLinear, cachedRadial } from '../effects/gradientCache';
 
 type Ctx = CanvasRenderingContext2D;
 
 // ---------- shared art helpers ----------
 
 function skyGrad(ctx: Ctx, y0: number, y1: number, c0: string, c1: string) {
-  const g = ctx.createLinearGradient(0, y0, 0, y1);
-  g.addColorStop(0, c0); g.addColorStop(1, c1);
-  ctx.fillStyle = g;
+  // cached: the sky ramp is identical every frame, it just used to be rebuilt
+  ctx.fillStyle = cachedLinear(ctx, 0, y0, 0, y1, [[0, c0], [1, c1]]);
   ctx.fillRect(-2200, y0, 4400, y1 - y0);
 }
 
@@ -55,16 +53,6 @@ function neonRect(ctx: Ctx, x: number, y: number, w: number, h: number, color: s
   ctx.restore();
 }
 
-// platform top edge highlighting helper
-function platTop(ctx: Ctx, p: Platform, color: string, lineW = 3) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = lineW;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(p.cx + 4, p.cy + 1.5);
-  ctx.lineTo(p.cx + p.w - 4, p.cy + 1.5);
-  ctx.stroke();
-}
 
 // crisp silhouette outline — the single biggest readability upgrade for platforms
 function outlineLast(ctx: Ctx, w = 3, color = 'rgba(6,9,16,0.85)') {
@@ -102,10 +90,13 @@ function godRays(ctx: Ctx, tick: number, cx: number, cy: number, rgb: string, re
   ctx.translate(cx, cy);
   for (let i = 0; i < 5; i++) {
     const a = 0.45 + i * 0.22 + Math.sin(tick * 0.004 + i * 1.7) * 0.035;
-    const g = ctx.createLinearGradient(0, 0, Math.cos(a) * reach, Math.sin(a) * reach);
-    g.addColorStop(0, `rgba(${rgb},0.14)`);
-    g.addColorStop(1, `rgba(${rgb},0)`);
-    ctx.fillStyle = g;
+    // The ray SHAPE sweeps, but the ramp along it does not need to: pinning the
+    // gradient to the unswept angle keeps it cacheable and looks identical.
+    const a0 = 0.45 + i * 0.22;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, Math.cos(a0) * reach, Math.sin(a0) * reach, [
+      [0, `rgba(${rgb},0.14)`],
+      [1, `rgba(${rgb},0)`],
+    ]);
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(Math.cos(a - 0.05) * reach * 1.05, Math.sin(a - 0.05) * reach * 1.05);
@@ -125,19 +116,14 @@ const forestHooks: StageHooks = {
   },
   drawBg(ctx, s, tick, camX, camY) {
     // ---- dusk sky: deep indigo falling into a warm teal horizon ----
-    const sky = ctx.createLinearGradient(0, -900, 0, 520);
-    sky.addColorStop(0, '#0a1524');
-    sky.addColorStop(0.42, '#10293c');
-    sky.addColorStop(0.75, '#174448');
-    sky.addColorStop(1, '#1f5c4e');
-    ctx.fillStyle = sky;
+    ctx.fillStyle = cachedLinear(ctx, 0, -900, 0, 520, [
+      [0, '#0a1524'], [0.42, '#10293c'], [0.75, '#174448'], [1, '#1f5c4e'],
+    ]);
     ctx.fillRect(-2200, -900, 4400, 1440);
     // low sun haze
-    const sun = ctx.createRadialGradient(470, -140, 40, 470, -140, 640);
-    sun.addColorStop(0, 'rgba(255,216,150,0.5)');
-    sun.addColorStop(0.35, 'rgba(255,190,120,0.16)');
-    sun.addColorStop(1, 'rgba(255,190,120,0)');
-    ctx.fillStyle = sun;
+    ctx.fillStyle = cachedRadial(ctx, 470, -140, 40, 470, -140, 640, [
+      [0, 'rgba(255,216,150,0.5)'], [0.35, 'rgba(255,190,120,0.16)'], [1, 'rgba(255,190,120,0)'],
+    ]);
     ctx.fillRect(-2200, -900, 4400, 1440);
     // stars in the upper dark
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
@@ -169,12 +155,14 @@ const forestHooks: StageHooks = {
     drawTree(ctx, -130 - camX * 0.26, 470 - camY * 0.26, 1.35, sway * 1.2, '#0c241b', '#17392a');
     drawTree(ctx, 215 - camX * 0.26, 480 - camY * 0.26, 1.5, -sway, '#0c241b', '#17392a');
     // ground fog band
-    const fog = ctx.createLinearGradient(0, 320, 0, 520);
-    fog.addColorStop(0, 'rgba(120,190,170,0)');
-    fog.addColorStop(0.6, `rgba(120,190,170,${0.1 + Math.sin(tick * 0.015) * 0.03})`);
-    fog.addColorStop(1, 'rgba(120,190,170,0.02)');
-    ctx.fillStyle = fog;
+    // Breathing fog: one cached ramp, animated through globalAlpha instead of
+    // rebuilding a colour stop every frame.
+    ctx.fillStyle = cachedLinear(ctx, 0, 320, 0, 520, [
+      [0, 'rgba(120,190,170,0)'], [0.6, 'rgba(120,190,170,0.13)'], [1, 'rgba(120,190,170,0.02)'],
+    ]);
+    ctx.globalAlpha = 0.77 + Math.sin(tick * 0.015) * 0.23;
     ctx.fillRect(-2200, 320, 4400, 220);
+    ctx.globalAlpha = 1;
     void s;
   },
   drawPlatform(ctx, s, p) {
@@ -190,11 +178,9 @@ const forestHooks: StageHooks = {
       ctx.lineTo(p.cx + p.w * 0.34, p.cy + p.h + 6);
       ctx.lineTo(p.cx + p.w * 0.14, p.cy + p.h * 0.6);
       ctx.closePath();
-      const dirt = ctx.createLinearGradient(0, p.cy + 8, 0, p.cy + p.h + 16);
-      dirt.addColorStop(0, '#6d5238');
-      dirt.addColorStop(0.45, '#513c29');
-      dirt.addColorStop(1, '#342517');
-      ctx.fillStyle = dirt;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy + 8, 0, p.cy + p.h + 16, [
+        [0, '#6d5238'], [0.45, '#513c29'], [1, '#342517'],
+      ]);
       ctx.fill();
       outlineLast(ctx, 3.5);
       // embedded rocks
@@ -231,11 +217,9 @@ const forestHooks: StageHooks = {
         wx = nx; k++;
       }
       ctx.closePath();
-      const grass = ctx.createLinearGradient(0, p.cy - 2, 0, p.cy + cap + 8);
-      grass.addColorStop(0, '#68bd60');
-      grass.addColorStop(0.5, '#3f8f47');
-      grass.addColorStop(1, '#29683a');
-      ctx.fillStyle = grass;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy - 2, 0, p.cy + cap + 8, [
+        [0, '#68bd60'], [0.5, '#3f8f47'], [1, '#29683a'],
+      ]);
       ctx.fill();
       outlineLast(ctx, 3.5);
       // top light catch
@@ -353,12 +337,12 @@ const volcanoHooks: StageHooks = {
       ctx.fill();
     }
     // lava lake glow
-    const lg = ctx.createLinearGradient(0, 380, 0, 620);
-    lg.addColorStop(0, 'rgba(255,120,40,0)');
-    lg.addColorStop(0.45, `rgba(255,120,40,${0.5 + Math.sin(tick * 0.05) * 0.12})`);
-    lg.addColorStop(1, 'rgba(255,60,10,0.9)');
-    ctx.fillStyle = lg;
+    ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 620, [
+      [0, 'rgba(255,120,40,0)'], [0.45, 'rgba(255,120,40,0.62)'], [1, 'rgba(255,60,10,0.9)'],
+    ]);
+    ctx.globalAlpha = 0.81 + Math.sin(tick * 0.05) * 0.19;
     ctx.fillRect(-2200, 380, 4400, 260);
+    ctx.globalAlpha = 1;
     // lava surface bubbles
     ctx.fillStyle = '#ffbd59';
     for (let i = 0; i < 7; i++) {
@@ -372,9 +356,9 @@ const volcanoHooks: StageHooks = {
   },
   drawPlatform(ctx, s, p) {
     if (p.type === 'solid') {
-      const g = ctx.createLinearGradient(0, p.cy, 0, p.cy + p.h);
-      g.addColorStop(0, '#4a3a3a'); g.addColorStop(0.12, '#382c2c'); g.addColorStop(1, '#241a1c');
-      ctx.fillStyle = g;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [
+        [0, '#4a3a3a'], [0.12, '#382c2c'], [1, '#241a1c'],
+      ]);
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 8); ctx.fill();
       outlineLast(ctx, 3);
       // basalt top
@@ -465,9 +449,9 @@ const neonHooks: StageHooks = {
     ctx.save();
     ctx.translate(120 - camX * 0.1, 430 - camY * 0.1);
     ctx.rotate(-0.7 + Math.sin(tick * 0.008) * 0.5);
-    const sg = ctx.createLinearGradient(0, 0, 0, -620);
-    sg.addColorStop(0, 'rgba(180,220,255,0.14)'); sg.addColorStop(1, 'rgba(180,220,255,0)');
-    ctx.fillStyle = sg;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, -620, [
+      [0, 'rgba(180,220,255,0.14)'], [1, 'rgba(180,220,255,0)'],
+    ]);
     ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-70, -620); ctx.lineTo(70, -620); ctx.closePath(); ctx.fill();
     ctx.restore();
   },
@@ -521,12 +505,17 @@ const frozenHooks: StageHooks = {
       }
       ctx.lineTo(900, ay + 90); ctx.lineTo(-900, ay + 90);
       ctx.closePath();
-      const ag = ctx.createLinearGradient(0, ay - 40, 0, ay + 90);
       const hue = [140, 170, 200][band];
-      ag.addColorStop(0, `hsla(${hue},80%,60%,${0.22 + Math.sin(tick * 0.02 + band) * 0.08})`);
-      ag.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = ag;
+      // Animate the aurora with globalAlpha rather than by baking a new colour
+      // stop every frame — same look, one cached ramp instead of 180/second.
+      ctx.fillStyle = cachedLinear(ctx, 0, ay - 40, 0, ay + 90, [
+        [0, `hsla(${hue},80%,60%,1)`],
+        [1, 'rgba(0,0,0,0)'],
+      ]);
+      const prevA = ctx.globalAlpha;
+      ctx.globalAlpha = prevA * (0.22 + Math.sin(tick * 0.02 + band) * 0.08);
       ctx.fill();
+      ctx.globalAlpha = prevA;
     }
     // stars
     ctx.fillStyle = 'rgba(255,255,255,0.8)';
@@ -554,19 +543,18 @@ const frozenHooks: StageHooks = {
       ctx.fillStyle = '#173050';
     }
     // frozen lake sheen
-    const lg = ctx.createLinearGradient(0, 380, 0, 640);
-    lg.addColorStop(0, 'rgba(160,220,255,0.25)');
-    lg.addColorStop(1, 'rgba(90,150,220,0.05)');
-    ctx.fillStyle = lg;
+    ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 640, [
+      [0, 'rgba(160,220,255,0.25)'], [1, 'rgba(90,150,220,0.05)'],
+    ]);
     ctx.fillRect(-2200, 380, 4400, 280);
   },
   drawPlatform(ctx, s, p) {
     const broken = p.broken > 0;
     ctx.globalAlpha = broken ? 0.15 : 1;
     if (p.type === 'solid') {
-      const g = ctx.createLinearGradient(0, p.cy, 0, p.cy + p.h);
-      g.addColorStop(0, '#bfe3ff'); g.addColorStop(0.14, '#7fb4e8'); g.addColorStop(0.16, '#3d6a9a'); g.addColorStop(1, '#274a72');
-      ctx.fillStyle = g;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [
+        [0, '#bfe3ff'], [0.14, '#7fb4e8'], [0.16, '#3d6a9a'], [1, '#274a72'],
+      ]);
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 6); ctx.fill();
       outlineLast(ctx, 3, 'rgba(10,30,52,0.8)');
       // glossy ice top
@@ -621,7 +609,7 @@ const skyHooks: StageHooks = {
     const w = s.wind;
     const cycle = mods.chaosHazards ? 240 : 420;
     w.timer--;
-    if (w.phase === 'idle' && w.timer <= 0) { w.phase = 'warn'; w.timer = 90; w.dir = chance(0.5) ? 1 : -1; }
+    if (w.phase === 'idle' && w.timer <= 0) { w.phase = 'warn'; w.timer = 90; w.dir = s.srand() < 0.5 ? 1 : -1; }
     else if (w.phase === 'warn') {
       if (s.tick % 14 === 0) particles.emit({ type: 'streak', x: w.dir > 0 ? -700 : 700, y: rand(-200, 250), vx: w.dir * 10, vy: 0, maxLife: 30, size: 12, color: 'rgba(200,230,255,0.5)', drag: 0.99 });
       if (w.timer <= 0) { w.phase = 'active'; w.timer = 130; }
@@ -642,9 +630,14 @@ const skyHooks: StageHooks = {
   drawBg(ctx, s, tick, camX, camY) {
     skyGrad(ctx, -900, 600, '#1a3a5c', '#7db4d8');
     // sun
-    const sg = ctx.createRadialGradient(500 - camX * 0.02, -300 - camY * 0.02, 10, 500 - camX * 0.02, -300 - camY * 0.02, 420);
-    sg.addColorStop(0, 'rgba(255,250,220,0.85)'); sg.addColorStop(1, 'rgba(255,250,220,0)');
-    ctx.fillStyle = sg; ctx.fillRect(-2200, -900, 4400, 1300);
+    // Parallax sun: snapping the centre to an 8px grid makes a slow camera
+    // pan reuse one ramp instead of allocating a new one every frame.
+    const sunX = Math.round((500 - camX * 0.02) / 8) * 8;
+    const sunY = Math.round((-300 - camY * 0.02) / 8) * 8;
+    ctx.fillStyle = cachedRadial(ctx, sunX, sunY, 10, sunX, sunY, 420, [
+      [0, 'rgba(255,250,220,0.85)'], [1, 'rgba(255,250,220,0)'],
+    ]);
+    ctx.fillRect(-2200, -900, 4400, 1300);
     // clouds parallax
     const t = tick;
     drawCloud(ctx, -400 - camX * 0.08 + ((t * 0.12) % 200), -160 - camY * 0.08, 1.6, 0.5);
@@ -688,9 +681,9 @@ const skyHooks: StageHooks = {
   drawPlatform(ctx, s, p) {
     if (p.type === 'solid') {
       // metal fortress deck
-      const g = ctx.createLinearGradient(0, p.cy, 0, p.cy + p.h);
-      g.addColorStop(0, '#8a96ac'); g.addColorStop(0.1, '#5c6a84'); g.addColorStop(1, '#37435c');
-      ctx.fillStyle = g;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [
+        [0, '#8a96ac'], [0.1, '#5c6a84'], [1, '#37435c'],
+      ]);
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 4); ctx.fill();
       outlineLast(ctx, 3, 'rgba(8,12,22,0.85)');
       ctx.fillStyle = '#aebcd4';
@@ -773,11 +766,11 @@ const riftHooks: StageHooks = {
   },
   drawBg(ctx, _s, tick, camX, camY) {
     // void
-    const g = ctx.createRadialGradient(-camX * 0.1, -camY * 0.1, 60, 0, 0, 900);
-    g.addColorStop(0, '#171126');
-    g.addColorStop(0.6, '#0d0a18');
-    g.addColorStop(1, '#050309');
-    ctx.fillStyle = g;
+    const vx = Math.round(-camX * 0.1 / 8) * 8;
+    const vy = Math.round(-camY * 0.1 / 8) * 8;
+    ctx.fillStyle = cachedRadial(ctx, vx, vy, 60, 0, 0, 900, [
+      [0, '#171126'], [0.6, '#0d0a18'], [1, '#050309'],
+    ]);
     ctx.fillRect(-2200, -1400, 4400, 2400);
     // swirling vortex arms
     ctx.save();
@@ -825,9 +818,9 @@ const riftHooks: StageHooks = {
     const warning = t > 330 && t < 400;
     if (p.type === 'solid') {
       // crystal main island
-      const g = ctx.createLinearGradient(0, p.cy, 0, p.cy + p.h);
-      g.addColorStop(0, '#9a7ae8'); g.addColorStop(0.14, '#6a4fc0'); g.addColorStop(0.16, '#3d2d70'); g.addColorStop(1, '#2a1e52');
-      ctx.fillStyle = g;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [
+        [0, '#9a7ae8'], [0.14, '#6a4fc0'], [0.16, '#3d2d70'], [1, '#2a1e52'],
+      ]);
       ctx.beginPath();
       ctx.moveTo(p.cx + 10, p.cy);
       ctx.lineTo(p.cx + p.w - 10, p.cy);
@@ -849,9 +842,7 @@ const riftHooks: StageHooks = {
     } else {
       // floating shard platform (semi transparent)
       ctx.globalAlpha = warning ? 0.45 + Math.sin(s.tick * 0.5) * 0.25 : 0.85;
-      const g = ctx.createLinearGradient(0, p.cy, 0, p.cy + p.h);
-      g.addColorStop(0, '#b79aff'); g.addColorStop(1, '#5a3fa8');
-      ctx.fillStyle = g;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [[0, '#b79aff'], [1, '#5a3fa8']]);
       ctx.beginPath();
       ctx.moveTo(p.cx + 6, p.cy);
       ctx.lineTo(p.cx + p.w - 6, p.cy);
@@ -892,11 +883,11 @@ function drawPortal(ctx: Ctx, x: number, y: number, r: number, tick: number, c0:
     ctx.stroke();
   }
   // center glow
-  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, r);
-  g.addColorStop(0, 'rgba(255,255,255,0.7)');
-  g.addColorStop(0.5, c0 + '66');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
+  ctx.fillStyle = cachedRadial(ctx, 0, 0, 2, 0, 0, r, [
+    [0, 'rgba(255,255,255,0.7)'],
+    [0.5, c0 + '66'],
+    [1, 'rgba(0,0,0,0)'],
+  ]);
   ctx.globalAlpha = 0.5 + Math.sin(tick * 0.1) * 0.15;
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
@@ -1007,6 +998,12 @@ export const STAGE_BUILDERS: Record<string, () => Stage> = {
 };
 
 export const STAGE_IDS = ['forest', 'volcano', 'neon', 'frozen', 'sky', 'rift'];
+
+/** Display names without paying to construct a whole Stage (used by menus/lists). */
+export const STAGE_NAMES: Record<string, string> = {
+  forest: 'FOREST RUINS', volcano: 'VOLCANIC CORE', neon: 'NEON CITY',
+  frozen: 'FROZEN LAKE', sky: 'SKY FORTRESS', rift: 'THE RIFT',
+};
 
 export function buildStage(id: string): Stage {
   return (STAGE_BUILDERS[id] ?? STAGE_BUILDERS.forest)();

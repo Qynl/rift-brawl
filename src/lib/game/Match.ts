@@ -5,7 +5,7 @@
 import {
   ChallengeModifiers, FighterId, InputState, MatchConfig, MatchResult, MoveData, ProjectileDef, TrainingDummy, emptyInput,
 } from './core/types';
-import { STEP, clamp, lerp, rand } from './core/constants';
+import { STEP, clamp, lerp, rand, SHIELD, MATCH, KB, shieldstunOf } from './core/constants';
 import { Stage } from './stages/Stage';
 import { buildStage } from './stages/stages';
 import { ParticleSystem } from './effects/Particles';
@@ -15,7 +15,11 @@ import { Fighter, World, HitInfo, ActiveHitbox, segDist, moveActive } from './fi
 import { FIGHTER_CONFIGS } from './fighters/configs';
 import { drawFighter, drawFighterShadow, drawShield, drawGrabLink } from './fighters/render';
 import { Projectile, Trap, swingFXSpec } from './fighters/combat';
+import { cachedLinear, cachedRadial } from './effects/gradientCache';
+import { applyPostFX } from './effects/postfx';
 import { AIController } from './ai/AIController';
+import { ReplayPlayback, ReplayRecorder } from './replay/format';
+import { KOCinematic } from './effects/cinematic';
 import type { NetEvent, NetProjectile, NetSnapshot, NetTrap } from './net/protocol';
 
 export interface MatchMods extends ChallengeModifiers {
@@ -32,18 +36,8 @@ export interface MatchCallbacks {
 
 interface Announcement { text: string; sub?: string; timer: number; max: number; size: number; color: string }
 
-const TITAN_QUAKE_WAVE: MoveData = {
-  id: 'quake_wave', name: 'Quake Wave', kind: 'special', startup: 0, active: 1, recovery: 0,
-  damage: 9, angle: 38, bkb: 13, kbg: 55,
-  projectile: { kind: 'shockwave', speed: 6, life: 42, r: 12, dmg: 9, angle: 38, bkb: 13, kbg: 55, groundHug: true, color: '#ffd166', sfx: 'hit2' },
-  projFrame: 0, sfx: 'hit2', fxColor: '#ffd166',
-};
-const TITAN_SLAM_WAVE: MoveData = {
-  id: 'slam_wave', name: 'Slam Shockwave', kind: 'special', startup: 0, active: 1, recovery: 0,
-  damage: 11, angle: 32, bkb: 15, kbg: 66,
-  projectile: { kind: 'shockwave', speed: 6.5, life: 46, r: 13, dmg: 11, angle: 32, bkb: 15, kbg: 66, groundHug: true, color: '#ffd166', sfx: 'hit3' },
-  projFrame: 0, sfx: 'hit3', fxColor: '#ffd166', strong: true,
-};
+// NOTE: the Titan shockwave move data lives in fighters/Fighter.ts (single
+// source of truth). Match used to carry a second, differently-tuned copy.
 
 export class Match implements World {
   stage: Stage;
@@ -61,6 +55,13 @@ export class Match implements World {
   countdown = 190;
   endTimer = 0;
   winner = -1;
+
+  // ---- match clock ----
+  // Before this, a stalemate simply never ended: the balance harness measured
+  // 20% of AI matches running past four minutes with no resolution.
+  timeLimitFrames = 0;
+  timeLeftFrames = 0;
+  timedOut = false;
 
   // netplay
   netMode: 'off' | 'host' | 'client' = 'off';
@@ -88,6 +89,12 @@ export class Match implements World {
 
   ais: AIController[] = [];
   inputProvider: ((slot: number) => InputState) | null = null;
+  /** records every resolved input frame so the match can be replayed exactly */
+  recorder: ReplayRecorder | null = null;
+  /** when set, the match is being driven by a recording instead of players */
+  playback: ReplayPlayback | null = null;
+  /** true while watching a replay — suppresses pause-menu-only affordances */
+  isReplay = false;
   engineInputs: InputState[] = [];
   private trainingDummy: TrainingDummy | null;
   private config: MatchConfig;
@@ -96,6 +103,8 @@ export class Match implements World {
   private ended = false;
   private stockIcons: number;
   private koFlashTimer = 0;
+  /** directed KO shot: freeze, punch-in, shockwave, star KO, letterbox */
+  readonly koCam = new KOCinematic();
   private hazardWarned = false;
   private speedlines = 0; // radial screen lines after heavy launches / KOs
 
@@ -112,6 +121,10 @@ export class Match implements World {
     this.trainingDummy = config.training?.dummy ?? null;
     if (config.training) this.trainingDummy = config.training.dummy;
     this.stockIcons = config.stocks;
+    const limit = config.training ? 0 : (config.timeLimit ?? MATCH.defaultTime);
+    this.timeLimitFrames = Math.max(0, Math.round(limit * 60));
+    this.timeLeftFrames = this.timeLimitFrames;
+    this.stage.seedRng(this.stage.id.length * 7919 + config.players.length * 104729);
 
     if (mods.lowGravity) this.gravity *= 0.58;
 
@@ -241,9 +254,13 @@ export class Match implements World {
     this.emitSfx(move.projectile.sfx);
   }
 
-  spawnTrap(f: Fighter) {
-    const x = f.x + f.facing * 34;
-    // snap to closest platform top below feet
+  /**
+   * Shared placement for every ground trap. Snaps to the platform top under the
+   * requested spot and enforces a PER-OWNER CAP so a zoner cannot carpet the
+   * stage — the oldest trap is retired when the cap is hit.
+   */
+  private placeTrap(f: Fighter, offset: number, style: Trap['style'], arm: number, cap: number, sfx = 'trap') {
+    const x = f.x + f.facing * offset;
     const feet = f.y + f.h / 2;
     let bestY = feet;
     let found = false;
@@ -253,29 +270,34 @@ export class Match implements World {
         if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
       }
     }
-    this.traps.push(new Trap(f, x, bestY));
-    this.emitSfx('trap');
-  }
-
-  spawnVoidSpikes(f: Fighter) {
-    // WRAITH's space control: a void pool further out than Hook's snare
-    const x = f.x + f.facing * 96;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
+    const mine = this.traps.filter(t => t.owner === f && t.style === style);
+    while (mine.length >= cap) {
+      const oldest = mine.shift()!;
+      oldest.life = 0;
+      const idx = this.traps.indexOf(oldest);
+      if (idx >= 0) this.traps.splice(idx, 1);
+      this.particles.emit({ type: 'spark', x: oldest.x, y: oldest.y, maxLife: 14, size: 3, color: '#889', vx: 0, vy: -1 });
     }
     const t = new Trap(f, x, bestY);
-    t.style = 'spikes';
+    t.style = style;
+    if (arm > 0) t.arm = arm;
     this.traps.push(t);
-    this.emitSfx('trap');
+    if (sfx) this.emitSfx(sfx as Parameters<Match['emitSfx']>[0]);
+    return t;
   }
 
+  spawnTrap(f: Fighter) { this.placeTrap(f, 34, 'rune', 0, 2); }
+
+  /** WRAITH's space control: a void pool further out than Hook's snare */
+  spawnVoidSpikes(f: Fighter) { this.placeTrap(f, 96, 'spikes', 0, 2); }
+
   spawnVenomCloud(x: number, y: number, owner: Fighter) {
+    const mine = this.traps.filter(t => t.owner === owner && t.style === 'venom');
+    while (mine.length >= 3) {
+      const oldest = mine.shift()!;
+      const idx = this.traps.indexOf(oldest);
+      if (idx >= 0) this.traps.splice(idx, 1);
+    }
     const t = new Trap(owner, x, y);
     t.style = 'venom';
     t.arm = 6;
@@ -283,41 +305,10 @@ export class Match implements World {
     this.pushEv({ k: 'sfx', s: 'poison' });
   }
 
-  spawnLightWard(f: Fighter) {
-    const x = f.x + f.facing * 80;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
-    }
-    const t = new Trap(f, x, bestY);
-    t.style = 'light';
-    this.traps.push(t);
-    this.emitSfx('trap');
-  }
+  spawnLightWard(f: Fighter) { this.placeTrap(f, 80, 'light', 0, 1); }
 
-  spawnBearTrap(f: Fighter) {
-    // JAEGER's Snare Trap: clamps the first fighter that steps on it
-    const x = f.x + f.facing * 52;
-    const feet = f.y + f.h / 2;
-    let bestY = feet;
-    let found = false;
-    for (const p of this.stage.platforms) {
-      if (p.broken > 0) continue;
-      if (x > p.cx && x < p.cx + p.w && p.cy >= feet - 30) {
-        if (!found || p.cy < bestY) { bestY = p.cy; found = true; }
-      }
-    }
-    const t = new Trap(f, x, bestY);
-    t.style = 'beartrap';
-    t.arm = 24;
-    this.traps.push(t);
-    this.emitSfx('trap');
-  }
+  /** JAEGER's Snare Trap: clamps the first fighter that steps on it */
+  spawnBearTrap(f: Fighter) { this.placeTrap(f, 52, 'beartrap', 24, 2); }
 
   onSwing(f: Fighter, m: MoveData) {
     // replicate the weapon-swing FX on remote clients (particles are local-only)
@@ -356,6 +347,7 @@ export class Match implements World {
     for (const a of this.announcements) a.timer--;
     this.announcements = this.announcements.filter(a => a.timer > 0);
     if (this.koFlashTimer > 0) this.koFlashTimer--;
+    this.koCam.update();
 
     if (this.phase === 'countdown') {
       this.stepCountdown();
@@ -364,6 +356,12 @@ export class Match implements World {
     } else if (this.phase === 'end') {
       this.stepEnd();
     }
+
+    // Inputs are captured AFTER the phase step, because the AI writes its
+    // decisions into the same InputState objects that gatherInputs handed out.
+    // Recording here means a replay contains exactly what the simulation saw.
+    this.recorder?.record(inputs);
+    this.playback?.advance();
 
     // damage display animation
     for (let i = 0; i < this.fighters.length; i++) {
@@ -406,7 +404,7 @@ export class Match implements World {
     const q = this.remotePackets.get(i);
     if (q && q.length > 0) {
       // merge all packets that arrived this step
-      let held = { ...st.held }, pressed = { ...st.pressed };
+      const held = { ...st.held }, pressed = { ...st.pressed };
       for (const k of Object.keys(st.pressed) as (keyof typeof pressed)[]) pressed[k] = false;
       let ax = st.axisX, ay = st.axisY;
       for (const pkt of q) {
@@ -646,12 +644,26 @@ export class Match implements World {
   }
 
   private stepFight(inputs: InputState[]) {
-    // AI + training dummies
-    for (const ai of this.ais) {
-      ai.update(inputs[ai.idx]);
+    // ---- clock ----
+    if (this.timeLimitFrames > 0 && !this.suddenDeath) {
+      this.timeLeftFrames--;
+      const secs = Math.ceil(this.timeLeftFrames / 60);
+      if (this.timeLeftFrames % 60 === 0 && secs > 0 && secs <= 5) {
+        this.audio.play('count');
+        this.announce(String(secs), 80, '#ffd166', undefined, 40);
+      }
+      if (this.timeLeftFrames === 60 * 30) this.announce('30 SECONDS', 34, '#ffd166', undefined, 60);
+      if (this.timeLeftFrames <= 0) { this.onTimeUp(); return; }
     }
-    if (this.trainingDummy && this.trainingDummy !== 'cpu' && this.fighters[1]) {
-      this.applyDummy(inputs[1]);
+    // AI + training dummies — skipped entirely during playback, where every
+    // slot (human and CPU alike) is driven by the recording.
+    if (!this.playback) {
+      for (const ai of this.ais) {
+        ai.update(inputs[ai.idx]);
+      }
+      if (this.trainingDummy && this.trainingDummy !== 'cpu' && this.fighters[1]) {
+        this.applyDummy(inputs[1]);
+      }
     }
 
     // world
@@ -760,6 +772,36 @@ export class Match implements World {
     }
   }
 
+  /**
+   * Clock expiry. Ranking is stocks first, then least damage taken — the
+   * standard platform-fighter tiebreak. A dead tie goes to sudden death.
+   */
+  private onTimeUp() {
+    this.timedOut = true;
+    const score = (f: Fighter) => f.stocks * 10000 - f.damage;
+    const ranked = [...this.fighters].sort((a, b) => score(b) - score(a));
+    const tied = ranked.filter(f => Math.abs(score(f) - score(ranked[0])) < 0.001);
+    if (tied.length > 1) {
+      this.suddenDeath = true;
+      this.timeLeftFrames = 60 * 60;
+      this.announce('SUDDEN DEATH!', 60, '#ffd166', 'tied on time', 110);
+      for (const f of this.fighters) {
+        if (tied.includes(f)) { f.stocks = 1; f.damage = MATCH.suddenDeathDamage; }
+        else { f.stocks = 0; f.state = 'ko'; f.cancelMove(); }
+      }
+      this.respawnQueue.length = 0;
+      for (const f of tied) this.respawnQueue.push({ f, timer: 70 + f.playerIndex * 6 });
+      return;
+    }
+    this.winner = ranked[0].playerIndex;
+    this.phase = 'end';
+    this.endTimer = 0;
+    this.slowmo = 0.45;
+    this.announce('TIME!', 88, '#ffd166', `${ranked[0].cfg.info.name} WINS`, 170);
+    this.audio.play('ko');
+    this.flash(0.4, '255,220,140');
+  }
+
   private buildResult(): MatchResult {
     return {
       winner: this.winner,
@@ -771,6 +813,7 @@ export class Match implements World {
       bestCombo: this.fighters.map(f => f.comboBest),
       techs: this.fighters.map(f => f.techCount),
       durationFrames: this.tick,
+      timeout: this.timedOut,
     };
   }
 
@@ -894,11 +937,15 @@ export class Match implements World {
   /** shield contact shared by melee & projectiles — supports the PARRY window */
   private attemptShieldHit(attacker: Fighter, victim: Fighter, victimIdx: number, dmg: number, dirSign: number, strong = false): boolean {
     void victimIdx;
-    // ---- PARRY (perfect shield): shield raised within 6 frames of impact ----
-    if (victim.shieldUpTimer <= 6) {
+    // ---- PARRY (perfect shield): shield raised within the parry window ----
+    if (victim.shieldUpTimer <= SHIELD.parryWindow) {
       victim.parried = 14;
-      victim.shieldHp = Math.min(victim.shieldMax, victim.shieldHp + 4);
-      attacker.applyHitstop(16);
+      victim.shieldHp = Math.min(victim.shieldMax, victim.shieldHp + 6);
+      victim.onParry(attacker);
+      attacker.applyHitstop(SHIELD.parryFreeze);
+      attacker.state = 'shieldstun';
+      attacker.stateTimer = Math.max(attacker.stateTimer, SHIELD.parryFreeze);
+      attacker.cancelMove();
       victim.applyHitstop(4);
       attacker.vx = dirSign * 6.5;
       const px = victim.x + dirSign * 16, py = victim.y;
@@ -915,7 +962,7 @@ export class Match implements World {
       this.announce('PARRY!', 38, '#ffe08a', undefined, 36);
       return true;
     }
-    victim.takeShieldHit(dmg, Math.round(3 + dmg * 0.45), dirSign);
+    victim.takeShieldHit(dmg, shieldstunOf(dmg), dirSign);
     attacker.applyHitstop(strong ? 9 : 6);
     return true;
   }
@@ -967,6 +1014,7 @@ export class Match implements World {
         victim.grabTimer = 60;
         victim.cancelMove();
         victim.shielding = false;
+        attacker.traitSpec.onGrab?.(attacker, victim, attacker.trait);
         this.emitSfx('grab');
         this.emitSfx('grabbed');
         this.particles.emit({ type: 'ring', x: victim.x, y: victim.y, maxLife: 12, size: 6, color: victim.cfg.info.colors.glow, vx: 0, vy: 0 });
@@ -1011,9 +1059,9 @@ export class Match implements World {
     else if (attacker.comboCount === 5) this.emitSfx('combo2');
     else if (attacker.comboCount === 8) this.emitSfx('combo3');
     const hitstunMul = move?.hitstunMul ?? 1;
-    victim.hitstun = Math.round(clamp(victim.hitstun * hitstunMul, 8, 55));
+    victim.hitstun = Math.round(clamp(victim.hitstun * hitstunMul, KB.hitstunMin, KB.hitstunMax));
     // venom: poison stacks bite over time (VIPER)
-    if (venom) victim.applyPoison(1);
+    if (venom) victim.applyPoison(1, attacker);
     // hitstop
     const hs = attacker.hitstopFor(dmg, strong);
     attacker.applyHitstop(hs);
@@ -1089,6 +1137,16 @@ export class Match implements World {
     const ex = clamp(f.x, b.left + 60, b.right - 60);
     const ey = clamp(f.y, b.top + 60, b.bottom - 60);
     this.particles.koBlast(ex, ey, f.cfg.info.colors.glow, this.mods.particleQ, true);
+    // The launch vector at the instant of death drives the whole shot: the
+    // shockwave, the beam and the screen-edge flare all point the way out.
+    this.koCam.reduceFlash = !!this.mods.reduceFlash;
+    this.koCam.trigger({
+      x: ex, y: ey,
+      vx: f.vx, vy: f.vy,
+      color: f.cfg.info.colors.glow,
+      kind,
+      final: this.fighters.filter(x => x.stocks > 0).length <= 1,
+    });
     this.pushEv({ k: 'ko', x: Math.round(ex), y: Math.round(ey), c: f.cfg.info.colors.glow });
     this.audio.play('ko');
     this.shake(1.15);
@@ -1096,10 +1154,10 @@ export class Match implements World {
     this.punchZoom(1.25);
     this.speedlines = 34;
     this.announce('KO!', 96, '#ff5c5c', undefined, 70);
-    void kind;
     // credit (within 6s of last hit)
     if (f.lastHitBy && f.lastHitBy !== f && this.tick - f.lastHitTime < 360) {
       f.lastHitBy.kos++;
+      f.lastHitBy.traitSpec.onKO?.(f.lastHitBy, f.lastHitBy.trait);
     }
     // end checks (N players)
     const alive = this.fighters.filter(x => x.stocks > 0);
@@ -1107,7 +1165,8 @@ export class Match implements World {
       this.winner = alive[0].playerIndex;
       this.phase = 'end';
       this.endTimer = 0;
-      // cinematic final-KO slow-mo
+      // The KO cinematic drives the time scale for the first ~34 frames; this
+      // is the tail it eases out from.
       this.slowmo = 0.3;
       const winnerF = alive[0];
       this.announce(`${winnerF.cfg.info.name} WINS!`, 64, winnerF.cfg.info.colors.glow, undefined, 200);
@@ -1148,6 +1207,14 @@ export class Match implements World {
     if (pts.length === 0) {
       // everyone KO'd: frame the stage
       pts.push({ x: 0, y: 0 });
+    }
+    // During a KO the camera belongs to the cinematic. Weighting the blast
+    // point into the fit-all solve pulls the shot there and lets it drift back
+    // to the survivors as the shot's authority decays.
+    const focus = this.koCam.focus();
+    if (focus && focus.strength > 0.01) {
+      const copies = Math.max(1, Math.round(focus.strength * (pts.length * 4 + 4)));
+      for (let i = 0; i < copies; i++) pts.push({ x: focus.x, y: focus.y });
     }
     // slight upward bias so falling below stage stays visible
     this.camera.update(STEP, pts, -20);
@@ -1228,6 +1295,9 @@ export class Match implements World {
     // particles (world space)
     this.particles.render(ctx, 1);
 
+    // KO shockwave / beam / shards (world space, additive)
+    this.koCam.renderWorld(ctx);
+
     // debug overlays
     if (this.debugHitboxes) this.renderDebug(ctx);
 
@@ -1238,6 +1308,24 @@ export class Match implements World {
       ctx.fillRect(0, 0, this.viewW, this.viewH);
     }
     if (this.speedlines > 0 && !this.mods.reduceFlash) this.renderSpeedlines(ctx);
+
+    // Edge flare / star KO / letterbox. Drawn before post-processing so the
+    // bloom pass picks them up and they feel like light, not like decals.
+    this.koCam.renderScreen(ctx, this.viewW, this.viewH);
+
+    // ---- post processing: bloom + impact aberration ----
+    // Runs on the world layer only, BEFORE the HUD, so the UI stays crisp.
+    if (this.mods.quality !== 'low') {
+      const koPunch = this.koCam.active ? Math.max(0, 1 - this.koCam.t / 16) : 0;
+      const impact = Math.max(clamp(this.koFlashTimer / 8, 0, 1), koPunch);
+      applyPostFX(ctx, this.viewW, this.viewH, {
+        bloom: this.mods.quality === 'high' ? 0.5 : 0.3,
+        aberration: this.mods.reduceFlash ? 0 : impact * 0.9,
+        dpr: cam.dpr,
+      });
+      ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
+    }
+
     this.renderVignette(ctx);
     this.renderHUD(ctx);
   }
@@ -1247,16 +1335,12 @@ export class Match implements World {
     const W = this.viewW, H = this.viewH;
     if (this.mods.quality === 'low') return;
     ctx.save();
-    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.78);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(1, 'rgba(2,2,10,0.42)');
-    ctx.fillStyle = g;
+    ctx.fillStyle = cachedRadial(ctx, W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.78,
+      [[0, 'rgba(0,0,0,0)'], [1, 'rgba(2,2,10,0.42)']]);
     ctx.fillRect(0, 0, W, H);
     // soft top darkening for HUD readability
-    const top = ctx.createLinearGradient(0, 0, 0, H * 0.2);
-    top.addColorStop(0, 'rgba(2,2,12,0.3)');
-    top.addColorStop(1, 'rgba(2,2,12,0)');
-    ctx.fillStyle = top;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, H * 0.2,
+      [[0, 'rgba(2,2,12,0.3)'], [1, 'rgba(2,2,12,0)']]);
     ctx.fillRect(0, 0, W, H * 0.2);
     ctx.restore();
   }
@@ -1352,13 +1436,42 @@ export class Match implements World {
       }
     }
 
+    // ---- match clock ----
+    if (this.timeLimitFrames > 0) {
+      const total = Math.max(0, this.timeLeftFrames);
+      const mm = Math.floor(total / 3600);
+      const ss = Math.floor((total % 3600) / 60);
+      const cs = Math.floor((total % 60) / 0.6);
+      const low = total < 60 * 10;
+      const urgent = low ? 0.55 + Math.sin(this.tick * 0.35) * 0.45 : 1;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const cw = 138, ch = 44;
+      ctx.fillStyle = 'rgba(8,8,20,0.78)';
+      roundRect(ctx, W / 2 - cw / 2, 8, cw, ch, 10); ctx.fill();
+      ctx.strokeStyle = low ? `rgba(255,90,90,${urgent.toFixed(2)})` : 'rgba(255,255,255,0.16)';
+      ctx.lineWidth = low ? 2 : 1;
+      roundRect(ctx, W / 2 - cw / 2, 8, cw, ch, 10); ctx.stroke();
+      ctx.font = '900 26px "Arial Black", sans-serif';
+      ctx.fillStyle = low ? '#ff6b6b' : '#ffffff';
+      if (low) { ctx.shadowColor = '#ff4d4d'; ctx.shadowBlur = 14 * urgent; }
+      ctx.fillText(`${mm}:${String(ss).padStart(2, '0')}`, W / 2 - 12, 31);
+      ctx.shadowBlur = 0;
+      ctx.font = '800 14px "Segoe UI", sans-serif';
+      ctx.fillStyle = low ? 'rgba(255,140,140,0.9)' : 'rgba(255,255,255,0.55)';
+      ctx.fillText(`.${String(cs).padStart(2, '0')}`, W / 2 + 40, 33);
+      ctx.restore();
+    }
+
     // netplay status chip
     if (this.netMode !== 'off') {
       ctx.save();
       ctx.font = '600 12px monospace';
       ctx.fillStyle = 'rgba(140,255,220,0.75)';
       ctx.textAlign = 'center';
-      ctx.fillText(this.netMode === 'host' ? 'ONLINE · HOST' : 'ONLINE · CLIENT', W / 2, 26);
+      ctx.textAlign = 'left';
+      ctx.fillText(this.netMode === 'host' ? 'ONLINE · HOST' : 'ONLINE · CLIENT', 18, 26);
       ctx.restore();
     }
 
@@ -1410,10 +1523,10 @@ export class Match implements World {
         ctx.fillText(ann.text, ann.size * 0.022, 1);
         ctx.restore();
       }
-      const grad = ctx.createLinearGradient(0, -ann.size / 2, 0, ann.size / 2);
-      grad.addColorStop(0, '#ffffff');
-      grad.addColorStop(1, ann.color);
-      ctx.fillStyle = grad;
+      ctx.fillStyle = cachedLinear(ctx, 0, -ann.size / 2, 0, ann.size / 2, [
+        [0, '#ffffff'],
+        [1, ann.color],
+      ]);
       ctx.fillText(ann.text, 0, 0);
       if (ann.sub) {
         ctx.font = '600 18px sans-serif';
@@ -1494,7 +1607,7 @@ export class Match implements World {
 
   private drawPlayerCard(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: number, portrait: HTMLCanvasElement, alignRight: boolean, uiScale: number) {
     const scale = clamp((this.viewW / 1280) * uiScale, 0.55, 1.2);
-    const cardW = 262 * scale, cardH = 92 * scale;
+    const cardW = 262 * scale, cardH = 102 * scale;
     const x0 = alignRight ? x - cardW : x;
     const c = f.cfg.info.colors;
     const dmg = Math.floor(this.shownDamage[f.playerIndex]);
@@ -1510,10 +1623,8 @@ export class Match implements World {
     roundRect(ctx, 4, 6, cardW, cardH, 8);
     ctx.fill();
     // body gradient
-    const bg = ctx.createLinearGradient(0, 0, 0, cardH);
-    bg.addColorStop(0, 'rgba(16,15,34,0.92)');
-    bg.addColorStop(1, 'rgba(8,8,20,0.94)');
-    ctx.fillStyle = bg;
+    ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, cardH,
+      [[0, 'rgba(16,15,34,0.92)'], [1, 'rgba(8,8,20,0.94)']]);
     roundRect(ctx, 0, 0, cardW, cardH, 8);
     ctx.fill();
     // team color spine
@@ -1571,11 +1682,21 @@ export class Match implements World {
     // underline
     ctx.fillStyle = c.glow;
     ctx.fillRect(alignRight ? cardW - pw - 22 - 120 * scale : pw + 22, 27 * scale, 120 * scale, 1.5);
-    // ---- poison stack indicator ----
-    if (f.poison > 0) {
+    // ---- status strip (poison / burn / chill / shock) ----
+    const statuses: [string, string][] = [];
+    if (f.poison > 0) statuses.push([`☠${f.poison}`, '#aef65c']);
+    if (f.burn > 0) statuses.push(['🔥', '#ff8a3c']);
+    if (f.chill > 0) statuses.push([`❄${f.chill}`, '#9fe8ff']);
+    if (f.shock > 0) statuses.push(['⚡', '#7cf3ff']);
+    if (statuses.length) {
       ctx.font = `800 ${11 * scale}px "Segoe UI", sans-serif`;
-      ctx.fillStyle = '#aef65c';
-      ctx.fillText(`☠ POISON ×${f.poison}`, alignRight ? cardW - pw - 22 : pw + 22, 40 * scale);
+      ctx.textAlign = alignRight ? 'right' : 'left';
+      let sx = alignRight ? cardW - pw - 22 : pw + 22;
+      for (const [glyph, colr] of statuses) {
+        ctx.fillStyle = colr;
+        ctx.fillText(glyph, sx, 40 * scale);
+        sx += (alignRight ? -1 : 1) * 26 * scale;
+      }
     }
     // ---- big italic damage % ----
     const col = dmg < 50 ? '#ffffff' : dmg < 90 ? '#ffd166' : dmg < 140 ? '#ff8a5c' : '#ff4d4d';
@@ -1601,8 +1722,60 @@ export class Match implements World {
     ctx.fillStyle = col;
     ctx.fillText(`${dmg}%`, 0, 0);
     ctx.restore();
+    // ---- SIGNATURE RESOURCE METER ----
+    // Every fighter has one and it is never the same bar twice: pips for
+    // ammo-style kits, a smooth bar for charge-style kits.
+    {
+      const spec = f.traitSpec, t = f.trait;
+      const mw = 108 * scale, mh = 7 * scale;
+      const mx = alignRight ? cardW - pw - 22 - mw : pw + 22;
+      const my = 66 * scale;
+      const pulse = t.flash > 0 ? 0.45 + Math.sin(this.tick * 0.7) * 0.35 : 0;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      roundRect(ctx, mx, my, mw, mh, mh / 2); ctx.fill();
+      if (spec.segments > 0) {
+        const seg = spec.segments;
+        const gap = 3 * scale;
+        const sw = (mw - gap * (seg - 1)) / seg;
+        for (let i = 0; i < seg; i++) {
+          const filled = i < t.charges;
+          ctx.fillStyle = filled ? spec.color : 'rgba(255,255,255,0.07)';
+          if (filled) { ctx.shadowColor = spec.color; ctx.shadowBlur = 6 * scale; }
+          roundRect(ctx, mx + i * (sw + gap), my, sw, mh, 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+        // partial refill on the next empty pip
+        if (t.charges < seg && t.meter > 0) {
+          const frac = clamp(t.meter * seg - t.charges, 0, 1);
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = spec.color;
+          roundRect(ctx, mx + t.charges * (sw + gap), my, sw * frac, mh, 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      } else {
+        ctx.fillStyle = spec.color;
+        ctx.shadowColor = spec.color;
+        ctx.shadowBlur = t.meter >= 1 ? 10 * scale : 4 * scale;
+        roundRect(ctx, mx, my, Math.max(2, mw * clamp(t.meter, 0, 1)), mh, mh / 2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      if (pulse > 0) {
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = '#ffffff';
+        roundRect(ctx, mx, my, mw, mh, mh / 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.font = `800 ${9 * scale}px "Segoe UI", sans-serif`;
+      ctx.textAlign = alignRight ? 'right' : 'left';
+      ctx.fillStyle = t.active || t.meter >= 1 ? spec.color : 'rgba(255,255,255,0.5)';
+      const caption = spec.hudText?.(f, t) ?? spec.label;
+      ctx.fillText(`${spec.label} ${caption}`, alignRight ? mx + mw : mx, my - 3 * scale);
+      ctx.restore();
+    }
+
     // ---- stock pips (glowing hexes) ----
-    const stockY = 76 * scale;
+    const stockY = 84 * scale;
     const maxPips = 5;
     if (this.stockIcons <= maxPips) {
       for (let i = 0; i < this.stockIcons; i++) {

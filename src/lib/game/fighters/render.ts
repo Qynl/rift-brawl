@@ -4,6 +4,9 @@
 
 import { Fighter, moveActive } from './Fighter';
 import { clamp, lerp } from '../core/constants';
+import { cachedLinear, cachedLinearSnap, cachedRadial } from '../effects/gradientCache';
+
+import { drawTraitAuraUnder, drawStatusFX, drawRimLight } from './aura';
 
 const VIS = 1.2; // visual presence bump (physics untouched)
 
@@ -415,8 +418,15 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: Fighter, tick: num
     ctx.globalAlpha = 0.45;
   }
 
+  // ---- signature resource aura (behind the body) ----
+  if (f.state !== 'respawn') drawTraitAuraUnder(ctx, f, rx, ry, tick);
+
   const pose = computePose(f, tick);
   const body = drawBody(ctx, f, rx, ry, tick, pose, alpha, false);
+  drawRimLight(ctx, f, rx, ry);
+
+  // ---- inflicted statuses (burn / poison / shock / chill / frozen) ----
+  drawStatusFX(ctx, f, rx, ry, tick);
 
   // ---- white hit-flash silhouette (Smash-style impact feedback) ----
   if (f.hitFlash > 0 && f.state !== 'respawn') {
@@ -444,19 +454,6 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: Fighter, tick: num
     ctx.beginPath();
     ctx.arc(rx, ry, f.h * 0.62 * VIS * (1.3 - f.parried / 24), 0, Math.PI * 2);
     ctx.stroke();
-    ctx.restore();
-  }
-
-  // ---- poison bubbles while venom ticks ----
-  if (f.poison > 0 && tick % 14 === 0) {
-    ctx.save();
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = '#aef65c';
-    for (let i = 0; i < f.poison + 1; i++) {
-      const bx = rx + Math.sin(tick * 0.2 + i * 2.4) * 9;
-      const by = ry - f.h * 0.3 - ((tick * 0.8 + i * 17) % 26);
-      ctx.beginPath(); ctx.arc(bx, by, 2 + Math.sin(tick * 0.3 + i) * 0.8, 0, Math.PI * 2); ctx.fill();
-    }
     ctx.restore();
   }
 
@@ -536,7 +533,7 @@ function drawBody(
     ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.ellipse(ex + 1.5, ey, 4.6, 2.8, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   });
-  const backArm = limb(ctx, -3, shoulderY + 2, pose.armB[0], pose.armB[1], 10.5, 10, limbW * 0.85, shade(dark, 2), outline, (ex, ey, ang) => {
+  limb(ctx, -3, shoulderY + 2, pose.armB[0], pose.armB[1], 10.5, 10, limbW * 0.85, shade(dark, 2), outline, (ex, ey, ang) => {
     drawHand(ctx, f, ex, ey, ang, shade(dark, 14), false, tick);
   });
 
@@ -548,11 +545,13 @@ function drawBody(
   roundCapsule(ctx, 0, (shoulderY + hipY) / 2 + 2, bodyW + 3.4, bodyH + 3.4, (bodyW + 3.4) * 0.42);
   ctx.fill();
   // fill gradient
-  const grad = ctx.createLinearGradient(-bodyW / 2, shoulderY, bodyW / 2, hipY + 4);
-  grad.addColorStop(0, shade(main, 30));
-  grad.addColorStop(0.5, main);
-  grad.addColorStop(1, shade(main, -36));
-  ctx.fillStyle = grad;
+  // Local-space coordinates, so this ramp is identical every frame for a given
+  // fighter — cached instead of rebuilt 60 times a second per character.
+  ctx.fillStyle = cachedLinear(ctx, -bodyW / 2, shoulderY, bodyW / 2, hipY + 4, [
+    [0, shade(main, 30)],
+    [0.5, main],
+    [1, shade(main, -36)],
+  ]);
   roundCapsule(ctx, 0, (shoulderY + hipY) / 2 + 2, bodyW, bodyH, bodyW * 0.42);
   ctx.fill();
   // rim light on facing edge
@@ -814,10 +813,10 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
   // skull with outline
   ctx.fillStyle = outline;
   ctx.beginPath(); ctx.arc(x, y, r + 1.6, 0, Math.PI * 2); ctx.fill();
-  const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.4, r * 0.2, x, y, r);
-  g.addColorStop(0, shade(c.primary, 38));
-  g.addColorStop(1, shade(c.primary, -22));
-  ctx.fillStyle = g;
+  ctx.fillStyle = cachedRadial(ctx, x - r * 0.3, y - r * 0.4, r * 0.2, x, y, r, [
+    [0, shade(c.primary, 38)],
+    [1, shade(c.primary, -22)],
+  ]);
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
 
   ctx.save();
@@ -1372,11 +1371,9 @@ function drawWeapon(ctx: CanvasRenderingContext2D, f: Fighter, hx: number, hy: n
       // blade — tapered quad with hard outline
       ctx.fillStyle = outline0();
       bladePoly(ctx, hx + dx * 1.5, hy + dy * 1.5, a, L - 1.5, 3.4, 1.2); ctx.fill();
-      const bg = ctx.createLinearGradient(hx, hy, tipX, tipY);
-      bg.addColorStop(0, '#ffffff');
-      bg.addColorStop(0.5, c.accent);
-      bg.addColorStop(1, glow);
-      ctx.fillStyle = bg;
+      ctx.fillStyle = cachedLinearSnap(ctx, hx, hy, tipX, tipY, 6, [
+        [0, '#ffffff'], [0.5, c.accent], [1, glow],
+      ]);
       bladePoly(ctx, hx + dx * 1.5, hy + dy * 1.5, a, L - 1.5, 2.3, 0.55); ctx.fill();
       // hot core line
       ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = 1.2;
@@ -1566,10 +1563,10 @@ function drawWeapon(ctx: CanvasRenderingContext2D, f: Fighter, hx: number, hy: n
       // main shaft
       ctx.strokeStyle = outline0(); ctx.lineWidth = 5.6; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipX, tipY); ctx.stroke();
-      const tg = ctx.createLinearGradient(hx, hy, tipX, tipY);
-      tg.addColorStop(0, shade(c.secondary, 30));
-      tg.addColorStop(1, shade(c.accent, 10));
-      ctx.strokeStyle = tg; ctx.lineWidth = 3.6;
+      ctx.strokeStyle = cachedLinearSnap(ctx, hx, hy, tipX, tipY, 6, [
+        [0, shade(c.secondary, 30)], [1, shade(c.accent, 10)],
+      ]);
+      ctx.lineWidth = 3.6;
       ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipX, tipY); ctx.stroke();
       // perpendicular side handle
       ctx.strokeStyle = outline0(); ctx.lineWidth = 5;
@@ -1706,7 +1703,6 @@ function drawWeapon(ctx: CanvasRenderingContext2D, f: Fighter, hx: number, hy: n
       ctx.strokeStyle = lg; ctx.lineWidth = 4.2;
       ctx.beginPath(); ctx.moveTo(hx - dx * 6, hy - dy * 6); ctx.lineTo(tipX - dx * L * 0.14, tipY - dy * L * 0.14); ctx.stroke();
       // conical spearhead — the longest reach in the rift
-      const tipA = a;
       const headLen = L * 0.2;
       const baseX = tipX - dx * headLen, baseY = tipY - dy * headLen;
       ctx.fillStyle = outline0();

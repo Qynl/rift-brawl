@@ -1,0 +1,36 @@
+# RIFT BRAWL on Netlify.
+#
+# Drag the `out/` folder onto app.netlify.com/drop, or connect the repo and
+# Netlify will read this file. Served from a domain root, so no base path.
+
+[build]
+  command = "npm run build"
+  publish = "out"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_PUBLIC_BASE_PATH = ""
+
+# Client-side game: unknown paths resolve to the shell rather than a 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Content-hashed build output can be cached forever.
+[[headers]]
+  for = "/_next/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# The worker must always be revalidated or players get stuck on an old build.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

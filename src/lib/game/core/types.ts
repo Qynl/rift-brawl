@@ -218,6 +218,8 @@ export interface PlayerSetup {
 export interface MatchConfig {
   players: PlayerSetup[];   // 2..4 fighters
   stocks: number;
+  /** match clock in seconds; 0 or undefined = no limit */
+  timeLimit?: number;
   stageId: string;
   training?: { dummy: TrainingDummy };
   modifiers?: Partial<ChallengeModifiers>;
@@ -244,6 +246,8 @@ export interface MatchResult {
   bestCombo: number[];
   techs: number[];          // successful techs per player (R11)
   durationFrames: number;
+  /** true when the clock ran out rather than a fighter losing every stock */
+  timeout?: boolean;
 }
 
 export interface GameSettings {
@@ -255,6 +259,17 @@ export interface GameSettings {
   quality: 'low' | 'medium' | 'high';
   showFps: boolean;
   reduceFlashing: boolean;
+  // ---- accessibility ----
+  /** kills camera shake, zoom punch, speed lines and the KO freeze */
+  reduceMotion: boolean;
+  /** 0.8 … 1.4 multiplier on the in-match HUD */
+  hudScale: number;
+  /**
+   * Draws a distinct SHAPE over each fighter (triangle / square / circle /
+   * diamond). Colour alone cannot separate four players for a colour-blind
+   * viewer; shape can.
+   */
+  playerMarkers: boolean;
   keybinds: {
     p1: Partial<Record<ActionName, KeyBindValue>>;
     p2: Partial<Record<ActionName, KeyBindValue>>;

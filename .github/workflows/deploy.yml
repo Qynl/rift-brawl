@@ -1,0 +1,93 @@
+name: Deploy to GitHub Pages
+
+# RIFT BRAWL is entirely client-side, so the whole game ships as static files.
+#
+# ONE-TIME SETUP: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions". Nothing else. After that every push to main publishes.
+#
+# The site lands at https://<owner>.github.io/<repo>/, which is a sub-path, so
+# the build is given a base path. On a custom domain (a CNAME at the repo
+# root), set BASE_PATH to an empty string instead.
+
+on:
+  push:
+    branches:
+      - main
+      # Lets the site go live from the working branch before it is merged.
+      - 'arena/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; let a newer one finish rather than cancelling it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build static site
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Deploying a broken build is worse than not deploying: the same gates
+      # CI runs have to pass here too.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Determinism (replays and netcode depend on it)
+        run: npm run sim:determinism
+
+      - name: Render smoke test
+        run: npm run sim:render
+
+      - name: Build static export
+        env:
+          # github.event.repository.name -> "rift-brawl"; blank it for a
+          # user/organisation page or a custom domain.
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+          NEXT_PUBLIC_SITE_URL: ${{ steps.pages.outputs.base_url || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+          # Point this at your deployed relay to enable online play. Without
+          # it the game is fully playable offline and online simply reports
+          # that no lobby server is configured.
+          NEXT_PUBLIC_LOBBY_URL: ${{ vars.NEXT_PUBLIC_LOBBY_URL }}
+        run: npm run build
+
+      # Pages serves /_next/* fine, but Jekyll would otherwise strip
+      # underscore-prefixed directories before it ever gets there.
+      - name: Disable Jekyll
+        run: touch out/.nojekyll
+
+      # ONE-TIME, BY A REPO ADMIN: Settings -> Pages -> Build and deployment
+      # -> Source -> "GitHub Actions". Neither this workflow's token nor an
+      # app token is allowed to flip that switch (both get a 403), so it has
+      # to be done by hand -- once. Everything above this line already passes.
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

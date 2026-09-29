@@ -1,0 +1,30 @@
+# RIFT BRAWL — game + online lobby relay.
+#
+#   docker compose up --build   ->  http://localhost:3000
+#
+# Single player, local versus, training, arcade, survival, challenges and
+# replays all work without the lobby; it is only needed for online matches.
+
+services:
+  game:
+    build:
+      context: .
+      args:
+        # Baked in at build time because it is a NEXT_PUBLIC_ value: the
+        # browser needs to know where the relay lives.
+        NEXT_PUBLIC_LOBBY_URL: ${NEXT_PUBLIC_LOBBY_URL:-http://localhost:3003}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - lobby
+
+  lobby:
+    build:
+      context: .
+      dockerfile: mini-services/lobby-service/Dockerfile
+    ports:
+      - "3003:3003"   # socket.io relay
+      - "3004:3004"   # /healthz
+    restart: unless-stopped

@@ -24,10 +24,58 @@ interface Room {
   players: Map<string, LobbyPlayer & { socket: Socket }>;
   inMatch: boolean;
   hostSlot: number;
+  lastActivity: number;
 }
 
 const rooms = new Map<string, Room>();
 const socketRoom = new Map<string, string>();
+
+// ---------------------------------------------------------------------------
+//  ABUSE CONTROLS
+//  The relay previously had no rate limit, no room lifetime and no message
+//  size cap: a single client could create unlimited rooms or flood every peer.
+// ---------------------------------------------------------------------------
+
+/** max lobby control messages per socket per window */
+const RATE_LIMIT = { windowMs: 10_000, maxEvents: 60 };
+/** rooms with no activity for this long are reaped */
+const ROOM_TTL_MS = 30 * 60 * 1000;
+/** hard cap on a relayed match payload, in bytes of JSON */
+const MAX_PAYLOAD = 64 * 1024;
+
+const rateState = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimited(socket: Socket): boolean {
+  const now = Date.now();
+  let st = rateState.get(socket.id);
+  if (!st || now > st.resetAt) {
+    st = { count: 0, resetAt: now + RATE_LIMIT.windowMs };
+    rateState.set(socket.id, st);
+  }
+  st.count++;
+  if (st.count > RATE_LIMIT.maxEvents) {
+    socket.emit('lobby:error', { msg: 'Too many requests. Slow down.' });
+    return true;
+  }
+  return false;
+}
+
+function touchRoom(room: Room) { room.lastActivity = Date.now(); }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    if (now - room.lastActivity > ROOM_TTL_MS) {
+      for (const p of room.players.values()) {
+        p.socket.emit('match:aborted', { reason: 'Lobby expired.' });
+        p.socket.leave(code);
+        socketRoom.delete(p.socket.id);
+      }
+      rooms.delete(code);
+      console.log(`[lobby] room ${code} reaped (idle)`);
+    }
+  }
+}, 60_000).unref?.();
 
 function serializeRoom(room: Room): LobbyState {
   return {
@@ -70,7 +118,8 @@ io.on('connection', (socket) => {
     leaveCurrent(socket);
     let code = makeLobbyCode();
     while (rooms.has(code)) code = makeLobbyCode();
-    const room: Room = { code, players: new Map(), inMatch: false, hostSlot: 0 };
+    if (rateLimited(socket)) return;
+    const room: Room = { code, players: new Map(), inMatch: false, hostSlot: 0, lastActivity: Date.now() };
     room.players.set(socket.id, {
       slot: 0, socketId: socket.id, name: sanitizeName(data.name), char: data.char || 'vanguard', ready: false, socket,
     });
@@ -82,12 +131,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('lobby:join', (data: { code: string; name: string; char: string }) => {
+    if (rateLimited(socket)) return;
     leaveCurrent(socket);
     const code = String(data.code || '').toUpperCase().trim();
     const room = rooms.get(code);
     if (!room) { socket.emit('lobby:error', { msg: 'Lobby not found. Check the code.' }); return; }
     if (room.players.size >= MAX_PLAYERS) { socket.emit('lobby:error', { msg: 'Lobby is full (4 players).' }); return; }
     if (room.inMatch) { socket.emit('lobby:error', { msg: 'That lobby is mid-match. Try again soon.' }); return; }
+    touchRoom(room);
     const slot = freeSlot(room);
     if (slot < 0) { socket.emit('lobby:error', { msg: 'Lobby is full (4 players).' }); return; }
     room.players.set(socket.id, {
@@ -134,7 +185,7 @@ io.on('connection', (socket) => {
       hostSlot: room.hostSlot,
     };
     for (const p of room.players.values()) p.socket.emit('match:start', msg);
-    console.log(`[lobby] match started in ${code0(room.code)} with ${msg.players.length} players on ${msg.stageId}`);
+    console.log(`[lobby] match started in ${room.code} with ${msg.players.length} players on ${msg.stageId}`);
   });
 
   // ---------- match relay ----------
@@ -155,6 +206,8 @@ io.on('connection', (socket) => {
     if (!room || !room.inMatch) return;
     const me = room.players.get(socket.id);
     if (!me || me.slot !== room.hostSlot) return; // only the host broadcasts snapshots
+    if (payloadTooBig(snap)) return;              // never fan out an oversized frame
+    touchRoom(room);
     socket.to(room.code).emit('m:snap', snap);
   });
 
@@ -234,21 +287,41 @@ io.on('connection', (socket) => {
   }
 });
 
+/** Reject oversized relay payloads before they are fanned out to every peer. */
+function payloadTooBig(payload: unknown): boolean {
+  try { return JSON.stringify(payload).length > MAX_PAYLOAD; } catch { return true; }
+}
+
 function sanitizeName(name: string): string {
-  const n = String(name || '').replace(/[^\w \-]/g, '').trim().slice(0, 12);
+  const n = String(name || '').replace(/[^\w -]/g, '').trim().slice(0, 12);
   return n || 'PLAYER';
 }
 
-function code0(code: string): string { return code; }
-
-const PORT = 3003;
-httpServer.listen(PORT, () => {
+const PORT = Number(process.env.PORT || 3003);
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`RIFT BRAWL lobby service running on port ${PORT}`);
 });
 
-process.on('SIGTERM', () => {
-  httpServer.close(() => process.exit(0));
+// Socket.io is mounted at path '/', so it swallows every HTTP request on the
+// main port. Health checks therefore get their own tiny listener — a
+// deployment needs a readiness probe that does not speak the socket protocol.
+const health = createServer((req, res) => {
+  if (!req.url?.startsWith('/healthz')) { res.writeHead(404).end(); return; }
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    rooms: rooms.size,
+    players: [...rooms.values()].reduce((n, r) => n + r.players.size, 0),
+    uptime: Math.round(process.uptime()),
+  }));
 });
-process.on('SIGINT', () => {
-  httpServer.close(() => process.exit(0));
+health.listen(PORT + 1, '0.0.0.0', () => {
+  console.log(`RIFT BRAWL lobby health endpoint on port ${PORT + 1}/healthz`);
 });
+
+const shutdown = () => {
+  health.close();
+  httpServer.close(() => process.exit(0));
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

@@ -3,11 +3,14 @@
 
 'use client';
 
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import type { LobbyState, MatchStartMsg, NetSnapshot } from './protocol';
 import { ALL_ACTIONS } from '../core/types';
 
 export type NetStatus = 'offline' | 'connecting' | 'online';
+
+/** Port the lobby relay listens on (mini-services/lobby-service). */
+const LOBBY_PORT = 3003;
 
 interface NetHandlers {
   onLobbyState?: (lobby: LobbyState) => void;
@@ -20,6 +23,39 @@ interface NetHandlers {
 
 class NetClient {
   private socket: Socket | null = null;
+  private connecting = false;
+
+  /**
+   * Where the lobby relay lives.
+   *
+   * An explicit NEXT_PUBLIC_LOBBY_URL always wins, so a real deployment can
+   * point at a hosted relay. Failing that we try to work it out from the page
+   * we are being served from, because the relay is almost always a sibling of
+   * the game on the same machine:
+   *
+   *   <port>-<id>.e2b.app   preview host -> 3003-<id>.e2b.app
+   *   localhost:3000        dev / local  -> localhost:3003
+   *
+   * and finally the reverse-proxy port transform used by the original harness.
+   * Returning a bad guess is cheap: the socket fails to connect and the online
+   * screen says so. Nothing else in the game depends on this.
+   */
+  private endpoint(): string {
+    const configured = process.env.NEXT_PUBLIC_LOBBY_URL;
+    if (configured) return configured;
+    if (typeof window !== 'undefined') {
+      const { protocol, hostname, port } = window.location;
+      // Sandbox previews address ports by prefixing the hostname.
+      const preview = /^(\d+)-(.+)$/.exec(hostname);
+      if (preview) return `${protocol}//${LOBBY_PORT}-${preview[2]}`;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return `${protocol}//${hostname}:${LOBBY_PORT}`;
+      }
+      // Served from a port on some other host: try the same host, relay port.
+      if (port) return `${protocol}//${hostname}:${LOBBY_PORT}`;
+    }
+    return `/?XTransformPort=${LOBBY_PORT}`;
+  }
   private handlers: NetHandlers = {};
   private inputQueue: { h: number; p: number; ax: number; ay: number }[] = [];
   private snapQueue: NetSnapshot[] = [];
@@ -32,12 +68,30 @@ class NetClient {
   sentCount = 0;
   recvCount = 0;
 
-  connect(handlers: NetHandlers) {
-    if (this.socket) return;
+  /**
+   * Socket.io is ~45 KB gzipped and only ever needed if the player opens the
+   * ONLINE screen, yet it used to sit in the initial bundle for everyone.
+   * Loading it on demand keeps the offline game's first paint lean.
+   */
+  async connect(handlers: NetHandlers) {
+    if (this.socket || this.connecting) return;
+    this.connecting = true;
     this.handlers = handlers;
     this.status = 'connecting';
     handlers.onStatus?.('connecting');
-    const s = io('/?XTransformPort=3003', {
+    let io: typeof import('socket.io-client').io;
+    try {
+      ({ io } = await import('socket.io-client'));
+    } catch {
+      this.connecting = false;
+      this.status = 'offline';
+      handlers.onStatus?.('offline');
+      handlers.onError?.('Could not load the online module.');
+      return;
+    }
+    this.connecting = false;
+    if (this.socket) return;      // a second call resolved first
+    const s = io(this.endpoint(), {
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnection: true,

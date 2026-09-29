@@ -12,3 +12,6 @@ Allow: /
 
 User-agent: *
 Allow: /
+
+# Update this if you deploy somewhere else.
+Sitemap: https://qynl.github.io/rift-brawl/sitemap.xml

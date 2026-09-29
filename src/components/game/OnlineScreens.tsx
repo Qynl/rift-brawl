@@ -6,9 +6,9 @@
 import { useEffect, useRef, useState } from 'react';
 import MenuBackground from './MenuBackground';
 import { useFighterPreview } from './preview';
-import { FIGHTER_LIST, FIGHTER_IDS } from '@/lib/game/fighters/configs';
+import { FIGHTER_LIST } from '@/lib/game/fighters/configs';
 import { FighterId } from '@/lib/game/core/types';
-import { STAGE_IDS } from '@/lib/game/stages/stages';
+import { STAGE_IDS } from '@/lib/game/stages/meta';
 import { audio } from '@/lib/game/audio/AudioManager';
 import type { LobbyPlayer, LobbyState } from '@/lib/game/net/protocol';
 import { net, NetStatus } from '@/lib/game/net/NetClient';
@@ -176,7 +176,6 @@ export function OnlineLobby({ lobby, mySlot, status, error, onBack, onCycleChar,
   onCopyCode(): void;
 }) {
   const isHost = lobby.hostSlot === mySlot;
-  const me = lobby.players.find(p => p.slot === mySlot);
   const [stage, setStage] = useState(STAGE_IDS[0]);
   const [stocks, setStocks] = useState(3);
   const canStart = isHost && lobby.players.length >= 2 && lobby.players.every(p => p.ready || p.slot === mySlot);
@@ -277,9 +276,6 @@ export function OnlineLobby({ lobby, mySlot, status, error, onBack, onCycleChar,
   );
 }
 
-/** cycle through the roster */
-export function cycleChar(current: string, dir: 1 | -1): FighterId {
-  const idx = FIGHTER_IDS.indexOf(current as FighterId);
-  const n = FIGHTER_IDS.length;
-  return FIGHTER_IDS[((idx < 0 ? 0 : idx) + dir + n) % n];
-}
+// cycleChar now lives in lib/game/fighters/roster so the lobby UI and the root
+// component can share it without either pulling in the other.
+export { cycleChar } from '@/lib/game/fighters/roster';

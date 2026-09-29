@@ -1,8 +1,27 @@
 # RIFT BRAWL
 
+**[▶ Play it](https://qynl.github.io/rift-brawl/)** · [Deploy your own](docs/DEPLOY.md) · [What shipped](docs/PROGRESS.md)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl&project-name=rift-brawl&repository-name=rift-brawl)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl)
+
+Either button takes about a minute and ends on a live HTTPS URL. Both configs are
+committed, so there is nothing to fill in — the build is `npm run build`, the output is
+`out/`, and there are no environment variables to set unless you want online play.
+
 An original browser platform-fighter — percent-based knockback instead of health bars, stocks, 12 unique brawlers with signature weapons, 6 handcrafted stages, a utility-driven AI, and online lobby play with room codes for up to 4 players.
 
 Built with **Next.js, TypeScript and Canvas**. All characters, art and audio are original — every sound effect is synthesized at runtime with the Web Audio API, no external assets.
+
+## The site
+
+`/` is a real landing page, not a bare canvas: roster, stages, controls, FAQ and the technical
+detail, all server-rendered into the static HTML so crawlers, link unfurls and no-JS visitors get
+the actual content. The game is not in the initial bundle at all — it is fetched when someone
+clicks Play (and warmed during idle time before that), which is why first paint is 178 KB gzipped.
+
+The hero console is live: pick a fighter and a difficulty and the match starts with them.
+`/#play` is a deep link straight into the game, and the browser's Back button returns to the site.
 
 ## Features
 
@@ -35,22 +54,70 @@ All bindings are remappable in the in-game settings; gamepads work with the stan
 
 ## Getting started
 
+Requires Node 20+ (developed on Node 22).
+
 ```bash
 # install dependencies
-bun install        # or: npm install
+npm install
 
 # run the game
 npm run dev        # → http://localhost:3000
 ```
 
+### Building and hosting it
+
+RIFT BRAWL is a **static site** — no server, no database, no API. The build is a
+folder of files any host will serve, and once the service worker has cached the
+shell it keeps working offline.
+
+```bash
+npm run build         # → out/   static export
+npm start             # serve out/ on http://0.0.0.0:3000
+npm run preview:full  # build if needed + serve + run the online relay
+```
+
+| Target | How |
+| --- | --- |
+| **Arena / sandbox preview** | `npm run preview:full` — builds, serves on `:3000` and runs the lobby relay on `:3003`. Online play works with no configuration; the client derives the relay from the page host. |
+| **GitHub Pages** | Already wired up — an admin flips Settings → Pages → Source → "GitHub Actions" once, then every push to `main` publishes to `https://<owner>.github.io/<repo>/`. |
+| **Netlify** | Drag `out/` onto [app.netlify.com/drop](https://app.netlify.com/drop), or connect the repo (`netlify.toml` is committed). |
+| **Vercel** | `npx vercel --prod` (`vercel.json` is committed). |
+| **Docker** | `docker compose up --build` brings up the game on `:3000` and the lobby relay on `:3003`. |
+| **Anything else** | Upload `out/`. |
+
+Serving from a sub-directory needs `NEXT_PUBLIC_BASE_PATH=/your-path` at build
+time. Full details, including the cache headers worth setting, are in
+[docs/DEPLOY.md](docs/DEPLOY.md).
+
 ### Online lobby service
 
-Online play (room codes, up to 4 players) runs through a small Socket.io service:
+Online play (room codes, up to 4 players) runs through a small Socket.io relay:
 
 ```bash
 cd mini-services/lobby-service
-bun install
-bun run dev        # lobby service on port 3003
+npm install
+npm run dev        # relay on :3003, health probe on :3004/healthz
+```
+
+Point the client at a relay other than the default with
+`NEXT_PUBLIC_LOBBY_URL=https://your-relay.example`. Socket.io itself is loaded
+lazily — it is only fetched when a player actually opens the online menu, so it
+stays out of the initial bundle.
+
+## Verification
+
+There is no browser test runner; instead the real engine is driven headlessly
+from Node (`tools/sim/`), which is what CI gates on.
+
+```bash
+npm run verify           # typecheck + lint + determinism + frame data + render smoke
+
+npm run sim:determinism  # identical inputs must produce byte-identical state
+npm run sim:frames       # startup/active/recovery + on-shield safety for all 164 moves
+npm run sim:render       # every fighter × stage × visual state, checking for throws
+npm run sim:balance      # AI round-robin win-rate spread (slow, noisy)
+npm run sim:usage        # which moves/mechanics the AI actually reaches for
+npm run sim:autotune     # searches the per-fighter BALANCE multipliers
 ```
 
 ## Project structure
@@ -62,7 +129,18 @@ src/lib/game/            # engine core: physics, combat, camera, save
   net/                   # lobby protocol + net client
   stages/                # stage definitions
   audio/                 # procedural Web Audio synth
-  effects/               # particles, slash FX, hit feedback
-src/components/game/     # UI screens: landing, select, HUD, lobby, results
-mini-services/           # Socket.io lobby service for online play
+  effects/               # particles, glow sprites, gradient cache, post-processing
+src/components/game/     # UI screens: landing, select, HUD, lobby, results, touch pad
+mini-services/           # Socket.io lobby relay for online play
+tools/sim/               # headless simulation harness (determinism, frames, balance)
+docs/IMPROVEMENT-PLAN.md # audit + roadmap, with implementation status
 ```
+
+## Touch
+
+On coarse-pointer devices an on-screen layer appears automatically: a floating
+analog thumbstick on the left (it re-centres wherever your thumb lands), the
+attack/special/jump/grab cluster on the right, and a shield/dodge/dash strip
+above it. It is driven by pointer events rather than clicks, so chords like
+shield + attack work, and every virtual button is released on blur so inputs
+can never stick.

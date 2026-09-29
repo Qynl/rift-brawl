@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { GameEngine } from '@/lib/game/Engine';
 import { MatchConfig, MatchResult, GameSettings, FighterId } from '@/lib/game/core/types';
 import { MatchMods } from '@/lib/game/Match';
@@ -13,6 +13,9 @@ import { loadSave, saveSave } from '@/lib/game/core/save';
 import type { NetSession } from './RiftBrawl';
 import { net } from '@/lib/game/net/NetClient';
 import type { Match } from '@/lib/game/Match';
+import TouchControls from './TouchControls';
+import type { ReplayData } from '@/lib/game/replay/format';
+import { saveReplay } from '@/lib/game/replay/store';
 
 interface Props {
   engine: GameEngine;
@@ -27,6 +30,9 @@ interface Props {
   challengeId: string | null;
   result: MatchResult | null;
   paused: boolean;
+  /** when set, the canvas plays this recording back instead of a live match */
+  replay?: ReplayData | null;
+  onExitReplay?: () => void;
   onPauseRequest(): void;
   onEnd(r: MatchResult): void;
   onResume(): void;
@@ -42,6 +48,7 @@ interface Props {
 export default function GameScreen(props: Props) {
   const { engine, config, mods, settings, result, paused, netSession } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const replay = props.replay ?? null;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -51,17 +58,27 @@ export default function GameScreen(props: Props) {
       onEnd: props.onEnd,
       onPauseRequest: props.onPauseRequest,
     });
-    engine.start(config, mods, netSession ? netSession.mode : 'off');
+    if (replay) {
+      engine.setTimeScale(1);
+      engine.startReplay(replay, mods);
+    } else {
+      engine.start(config, mods, netSession ? netSession.mode : 'off');
+    }
     // QA/debug hook: lets instrumented browser tests inspect the live match
     (window as unknown as Record<string, unknown>).__rb = engine;
     // netplay transport wiring lives outside the component scope
     wireNetTransport(engine, netSession);
 
     return () => {
+      engine.setTimeScale(1);
       unwireNetTransport(engine);
       engine.detach();
       delete (window as unknown as Record<string, unknown>).__rb;
     };
+    // Mount-once by design: this boots the engine's rAF loop and owns the
+    // canvas. Re-running it on prop changes would restart the match mid-game;
+    // live settings/config updates are pushed through the engine imperatively.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const winnerName = result
@@ -90,6 +107,12 @@ export default function GameScreen(props: Props) {
   return (
     <div className="relative w-full h-full bg-black">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
+
+      {/* TOUCH CONTROLS — auto-detects a coarse pointer; invisible on desktop */}
+      <TouchControls engine={engine} hidden={!!result || paused || !!replay} />
+
+      {/* REPLAY TRANSPORT */}
+      {replay && <ReplayBar engine={engine} replay={replay} onExit={props.onExitReplay} />}
 
       {/* PAUSE OVERLAY */}
       {!result && paused && (
@@ -171,6 +194,7 @@ export default function GameScreen(props: Props) {
                   )}
                 </>
               )}
+              {props.mode !== 'online' && !replay && <SaveReplayButton engine={engine} />}
               <div className="grid grid-cols-2 gap-2">
                 {props.mode !== 'local' && props.mode !== 'survival' && props.mode !== 'online' && (
                   <OverlayButton onClick={props.onCharacterSelect}>CHARACTERS</OverlayButton>
@@ -181,6 +205,83 @@ export default function GameScreen(props: Props) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Results-screen affordance: the engine already recorded the match, so saving
+ * it is just persisting a few kilobytes of input track.
+ */
+function SaveReplayButton({ engine }: { engine: GameEngine }) {
+  const [saved, setSaved] = useState(false);
+  const data = engine.lastReplay;
+  if (!data) return null;
+  return (
+    <OverlayButton
+      onClick={() => {
+        if (saved) return;
+        saveReplay(data);
+        audio.play('ui_select');
+        setSaved(true);
+      }}
+    >
+      {saved ? '✓ REPLAY SAVED' : 'SAVE REPLAY'}
+    </OverlayButton>
+  );
+}
+
+const SPEEDS = [0.25, 0.5, 1, 2, 4];
+
+/** Transport controls shown while watching a recording. */
+function ReplayBar({ engine, replay, onExit }: {
+  engine: GameEngine;
+  replay: ReplayData;
+  onExit?: () => void;
+}) {
+  const [speed, setSpeed] = useState(1);
+  const [tick, setTick] = useState(0);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(engine.match?.tick ?? 0), 120);
+    return () => clearInterval(id);
+  }, [engine]);
+
+  const total = Math.max(1, replay.meta.durationFrames);
+  const pctDone = Math.min(100, (tick / total) * 100);
+
+  return (
+    <div className="absolute left-0 right-0 bottom-0 z-20 pointer-events-none">
+      <div className="mx-auto mb-3 w-[min(94vw,680px)] pointer-events-auto panel px-4 py-2.5">
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] tracking-[0.3em] font-black text-[#ff5c8a]">● REPLAY</span>
+          <div className="flex-1 h-1.5 bg-white/10 overflow-hidden" role="progressbar" aria-valuenow={Math.round(pctDone)}>
+            <div className="h-full bg-[#00e5b0] transition-[width] duration-150" style={{ width: `${pctDone}%` }} />
+          </div>
+          <span className="text-[10px] tracking-widest text-white/45 font-bold tabular-nums">
+            {fmtTime(tick)} / {fmtTime(total)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 mt-2">
+          <button
+            className={`rb-chip ${paused ? 'rb-on' : ''}`}
+            onClick={() => { const p = !paused; setPaused(p); engine.setPaused(p); }}
+          >
+            {paused ? '▶ PLAY' : '❚❚ PAUSE'}
+          </button>
+          {SPEEDS.map(s => (
+            <button
+              key={s}
+              className={`rb-chip ${speed === s ? 'rb-on' : ''}`}
+              onClick={() => { setSpeed(s); engine.setTimeScale(s); }}
+            >
+              {s}x
+            </button>
+          ))}
+          <button className="rb-chip ml-auto" onClick={() => onExit?.()}>EXIT</button>
+        </div>
+      </div>
     </div>
   );
 }

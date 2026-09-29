@@ -5,6 +5,7 @@ import { InputManager } from './core/input';
 import { GameSettings, MatchConfig, MatchResult } from './core/types';
 import { Match, MatchMods } from './Match';
 import { audio } from './audio/AudioManager';
+import { ReplayData, ReplayPlayback, ReplayRecorder } from './replay/format';
 
 export interface EngineCallbacks {
   onEnd(result: MatchResult): void;
@@ -23,6 +24,12 @@ export class GameEngine {
   match: Match | null = null;
   /** called after every fixed simulation step (used by netplay transport) */
   onFixedStep: (() => void) | null = null;
+  /** the recording of the most recently finished local match, if any */
+  lastReplay: ReplayData | null = null;
+  /** playback rate multiplier — replays can be watched at 0.25x … 4x */
+  timeScale = 1;
+  private recorder: ReplayRecorder | null = null;
+  private replayMeta: ReplayData['meta'] | null = null;
   private raf = 0;
   private acc = 0;
   private lastT = 0;
@@ -59,6 +66,10 @@ export class GameEngine {
       this.match.mods.showFps = s.showFps;
       this.match.mods.reduceFlash = s.reduceFlashing;
       this.match.mods.quality = s.quality;
+      this.match.mods.reduceMotion = s.reduceMotion;
+      this.match.mods.hudScale = s.hudScale;
+      this.match.mods.playerMarkers = s.playerMarkers;
+      this.match.camera.reduceShake = s.reduceMotion ? 0 : s.screenShake;
     }
     this.resize();
   }
@@ -99,21 +110,69 @@ export class GameEngine {
     }
   };
 
-  start(config: MatchConfig, mods: MatchMods, netMode: 'off' | 'host' | 'client' = 'off') {
+  /**
+   * Watch a recorded match. The simulation is byte-for-byte deterministic, so
+   * replaying the input tracks reproduces the original match exactly — no
+   * state snapshots and no video, just the buttons that were pressed.
+   */
+  startReplay(data: ReplayData, mods: MatchMods) {
+    const playback = new ReplayPlayback(data);
+    this.start(data.meta.config, mods, 'off', { record: false });
+    if (!this.match) return;
+    this.match.playback = playback;
+    this.match.inputProvider = playback.provide;
+    this.match.isReplay = true;
+  }
+
+  start(
+    config: MatchConfig,
+    mods: MatchMods,
+    netMode: 'off' | 'host' | 'client' = 'off',
+    opts: { record?: boolean } = {},
+  ) {
     if (!this.ctx) return;
     this.stop();
     this.quality = this.settings.quality;
     this.resize();
     this.match = new Match(config, audio, this.viewW, this.viewH, {
-      onEnd: (r) => this.callbacks?.onEnd(r),
+      onEnd: (r) => {
+        if (this.recorder && this.replayMeta) {
+          this.lastReplay = this.recorder.finish({
+            ...this.replayMeta,
+            winner: r.winner,
+            durationFrames: r.durationFrames,
+            timeout: !!r.timeout,
+          });
+        }
+        this.callbacks?.onEnd(r);
+      },
       onPauseRequest: () => this.callbacks?.onPauseRequest(),
     }, mods, netMode);
     this.match.engineInputs = [this.input.controllers[0], this.input.controllers[1]];
+    // Local matches are always recorded: it costs a few bytes per frame and it
+    // is what makes the replay theatre possible without asking first.
+    const record = opts.record ?? (netMode === 'off');
+    if (record) {
+      this.recorder = new ReplayRecorder(config.players.length);
+      this.match.recorder = this.recorder;
+      this.replayMeta = {
+        version: 0, createdAt: 0,
+        config: JSON.parse(JSON.stringify(config)) as MatchConfig,
+        mods: { ...mods } as unknown as Record<string, unknown>,
+        chars: config.players.map((p) => p.char),
+        labels: config.players.map((p) => p.label),
+        stageId: config.stageId,
+        winner: -1, durationFrames: 0, timeout: false,
+      };
+    } else {
+      this.recorder = null;
+      this.replayMeta = null;
+    }
     this.match.mods.showFps = this.settings.showFps;
     this.match.mods.reduceFlash = this.settings.reduceFlashing;
     (window as unknown as { __match?: Match }).__match = this.match;
-    // shake setting
-    this.match.camera.reduceShake = this.settings.screenShake;
+    // shake setting (reduced motion overrides it entirely)
+    this.match.camera.reduceShake = this.settings.reduceMotion ? 0 : this.settings.screenShake;
     // music
     audio.ensure();
     audio.playMusic(THEME_BY_STAGE[config.stageId] ?? 'forest');
@@ -133,7 +192,7 @@ export class GameEngine {
     const now = performance.now();
     const rawDt = Math.min(250, now - this.lastT);
     this.lastT = now;
-    this.acc += rawDt * this.match.slowmo;
+    this.acc += rawDt * Math.min(this.match.slowmo, this.match.koCam.timeScale()) * this.timeScale;
     let steps = 0;
     while (this.acc >= STEP_MS && steps < 6) {
       this.match.step();
@@ -154,6 +213,10 @@ export class GameEngine {
     audio.stopMusic();
   }
 
+  /** Replay transport speed. A method (not a raw field write) so React views
+   *  never mutate engine internals during render. */
+  setTimeScale(v: number) { this.timeScale = Math.max(0.05, Math.min(8, v)); }
+
   setPaused(p: boolean) {
     if (this.match) this.match.paused = p;
     if (p) audio.setMusicEnabled(false); else if (this.settings) audio.setMusicEnabled(true);
@@ -167,7 +230,9 @@ export class GameEngine {
     this.fpsAvg = this.fpsAvg * 0.95 + (1000 / Math.max(1, rawDt)) * 0.05;
     this.match.fps = this.fpsAvg;
 
-    const slowmo = this.match.slowmo;
+    // The KO cinematic's freeze takes priority over the match's own slow-mo:
+    // whichever wants time to run slower this frame wins.
+    const slowmo = Math.min(this.match.slowmo, this.match.koCam.timeScale()) * this.timeScale;
     this.acc += rawDt * slowmo;
     let steps = 0;
     while (this.acc >= STEP_MS && steps < 5) {

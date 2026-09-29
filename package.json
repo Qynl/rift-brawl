@@ -17,7 +17,8 @@
     "lobby": "node mini-services/lobby-service/server.mjs",
     "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:replay && npm run sim:frames && npm run sim:render",
     "sim:ladder": "node tools/sim/ladder.mjs",
-    "sim:replay": "node tools/sim/replay.mjs"
+    "sim:replay": "node tools/sim/replay.mjs",
+    "sim:shot": "node tools/sim/shot.mjs"
   },
   "dependencies": {
     "next": "^16.1.1",
@@ -27,6 +28,7 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "@tailwindcss/postcss": "^4",
     "@types/node": "26.6.3",
     "@types/react": "^19",

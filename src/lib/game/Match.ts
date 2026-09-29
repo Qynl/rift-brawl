@@ -6,7 +6,7 @@ import {
   ChallengeModifiers, FighterId, InputState, MatchConfig, MatchResult, MoveData, ProjectileDef, TrainingDummy, emptyInput,
 } from './core/types';
 import { STEP, clamp, lerp, rand, SHIELD, MATCH, KB, shieldstunOf } from './core/constants';
-import { Stage } from './stages/Stage';
+import { Stage, type Platform } from './stages/Stage';
 import { buildStage } from './stages/stages';
 import { ParticleSystem } from './effects/Particles';
 import { Camera } from './core/camera';
@@ -17,6 +17,7 @@ import { drawFighter, drawFighterShadow, drawShield, drawGrabLink } from './figh
 import { Projectile, Trap, swingFXSpec } from './fighters/combat';
 import { cachedLinear, cachedRadial } from './effects/gradientCache';
 import { applyPostFX } from './effects/postfx';
+import { lightingFor, drawBounceLight, drawReflection, drawGrade, type StageLighting } from './stages/lighting';
 import { AIController } from './ai/AIController';
 import { ReplayPlayback, ReplayRecorder } from './replay/format';
 import { KOCinematic } from './effects/cinematic';
@@ -108,6 +109,8 @@ export class Match implements World {
   private stockIcons: number;
   private koFlashTimer = 0;
   /** directed KO shot: freeze, punch-in, shockwave, star KO, letterbox */
+  /** lighting description for the current stage (see stages/lighting.ts) */
+  private light: StageLighting = lightingFor('');
   readonly koCam = new KOCinematic();
   private hazardWarned = false;
   private speedlines = 0; // radial screen lines after heavy launches / KOs
@@ -122,6 +125,7 @@ export class Match implements World {
     this.mods = mods;
     this.netMode = netMode;
     this.stage = buildStage(config.stageId);
+    this.light = lightingFor(config.stageId);
     this.trainingDummy = config.training?.dummy ?? null;
     if (config.training) this.trainingDummy = config.training.dummy;
     this.stockIcons = config.stocks;
@@ -1300,9 +1304,12 @@ export class Match implements World {
       }
     }
 
-    // shadows
+    // shadows, and the light the floor throws back up onto each fighter
+    const lowQ = this.mods.quality === 'low';
     for (const f of this.fighters) {
-      drawFighterShadow(ctx, f, this.groundBelow(f.x, f.y), 0.5);
+      const gy = this.groundBelow(f.x, f.y);
+      drawFighterShadow(ctx, f, gy, 0.5);
+      if (!lowQ) drawBounceLight(ctx, f, gy, this.light);
     }
 
     // grab link
@@ -1317,6 +1324,15 @@ export class Match implements World {
     for (const f of drawOrder) {
       drawFighter(ctx, f, this.tick, alpha);
     }
+    // glossy floors mirror whoever is standing on them
+    if (!lowQ && this.light.reflect > 0) {
+      for (const f of this.fighters) {
+        if (f.state === 'ko' || f.state === 'respawn') continue;
+        const p = f.standingOn ?? this.platformBelow(f);
+        drawReflection(ctx, f, p, this.light, (c) => drawFighter(c, f, this.tick, alpha));
+      }
+    }
+
     // shields on top
     for (const f of this.fighters) drawShield(ctx, f, this.tick);
 
@@ -1376,6 +1392,8 @@ export class Match implements World {
       ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
     }
 
+    // stage colour grade — ties the characters and the background together
+    if (this.mods.quality !== 'low') drawGrade(ctx, this.viewW, this.viewH, this.light);
     this.renderVignette(ctx);
     this.renderHUD(ctx);
   }
@@ -1393,6 +1411,19 @@ export class Match implements World {
       [[0, 'rgba(2,2,12,0.3)'], [1, 'rgba(2,2,12,0)']]);
     ctx.fillRect(0, 0, W, H * 0.2);
     ctx.restore();
+  }
+
+  /** nearest unbroken platform whose surface is below this fighter's feet */
+  private platformBelow(f: Fighter): Platform | null {
+    const feet = f.y + f.h / 2;
+    let best: Platform | null = null;
+    for (const p of this.stage.platforms) {
+      if (p.broken > 0) continue;
+      if (f.x < p.cx - 4 || f.x > p.cx + p.w + 4) continue;
+      if (p.cy < feet - 10) continue;
+      if (!best || p.cy < best.cy) best = p;
+    }
+    return best;
   }
 
   private groundBelow(x: number, y: number): number | null {
@@ -1700,7 +1731,7 @@ export class Match implements World {
     }
     // hit flash of the whole plate
     if (pop > 0.05) {
-      ctx.globalAlpha = pop * 0.5;
+      ctx.globalAlpha = pop * 0.16;
       ctx.fillStyle = '#ffffff';
       roundRect(ctx, 0, 0, cardW, cardH, 8);
       ctx.fill();
@@ -1748,15 +1779,15 @@ export class Match implements World {
       let sx = alignRight ? cardW - pw - 22 : pw + 22;
       for (const [glyph, colr] of statuses) {
         ctx.fillStyle = colr;
-        ctx.fillText(glyph, sx, 40 * scale);
+        ctx.fillText(glyph, sx, 41 * scale);
         sx += (alignRight ? -1 : 1) * 26 * scale;
       }
     }
     // ---- big italic damage % ----
     const col = dmg < 50 ? '#ffffff' : dmg < 90 ? '#ffd166' : dmg < 140 ? '#ff8a5c' : '#ff4d4d';
-    const popScale = 1 + pop * 0.4;
+    const popScale = 1 + pop * 0.2;
     ctx.save();
-    ctx.translate(nameX + (alignRight ? -46 * scale : 46 * scale), 62 * scale);
+    ctx.translate(nameX + (alignRight ? -46 * scale : 46 * scale), 57 * scale);
     ctx.transform(1, 0, -0.12, 1, 0, 0); // italic lean
     ctx.scale(popScale, popScale);
     ctx.font = `900 ${34 * scale}px "Arial Black", sans-serif`;
@@ -1783,7 +1814,7 @@ export class Match implements World {
       const spec = f.traitSpec, t = f.trait;
       const mw = 108 * scale, mh = 7 * scale;
       const mx = alignRight ? cardW - pw - 22 - mw : pw + 22;
-      const my = 66 * scale;
+      const my = 62 * scale;
       const pulse = t.flash > 0 ? 0.45 + Math.sin(this.tick * 0.7) * 0.35 : 0;
       ctx.save();
       ctx.fillStyle = 'rgba(255,255,255,0.10)';
@@ -1824,12 +1855,12 @@ export class Match implements World {
       ctx.textAlign = alignRight ? 'right' : 'left';
       ctx.fillStyle = t.active || t.meter >= 1 ? spec.color : 'rgba(255,255,255,0.5)';
       const caption = spec.hudText?.(f, t) ?? spec.label;
-      ctx.fillText(`${spec.label} ${caption}`, alignRight ? mx + mw : mx, my - 3 * scale);
+      ctx.fillText(`${spec.label} ${caption}`, alignRight ? mx + mw : mx, my + mh + 9 * scale);
       ctx.restore();
     }
 
     // ---- stock pips (glowing hexes) ----
-    const stockY = 84 * scale;
+    const stockY = 92 * scale;
     const maxPips = 5;
     if (this.stockIcons <= maxPips) {
       for (let i = 0; i < this.stockIcons; i++) {

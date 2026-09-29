@@ -11,7 +11,14 @@
 const cache = new Map<string, HTMLCanvasElement>();
 let budget = 96; // hard cap on distinct sprites; prevents unbounded growth
 
-function makeSprite(color: string, r: number, falloff: number): HTMLCanvasElement {
+/**
+ * `falloff` is where the half-bright stop sits, 0..1: small = tight hot core,
+ * large = broad soft haze. It is clamped because addColorStop throws an
+ * IndexSizeError outside that range, and a caller reaching for "softer" by
+ * passing 2 would take the whole renderer down in a real browser.
+ */
+function makeSprite(color: string, r: number, falloffRaw: number): HTMLCanvasElement {
+  const falloff = Math.min(0.98, Math.max(0.02, falloffRaw));
   const size = Math.max(4, Math.ceil(r * 2));
   const cv = document.createElement('canvas');
   cv.width = size;
@@ -51,9 +58,10 @@ function tint(color: string, mul: number): string {
 export function blitGlow(
   ctx: CanvasRenderingContext2D,
   x: number, y: number, r: number,
-  color: string, alpha: number, falloff = 0.55,
+  color: string, alpha: number, falloffRaw = 0.55,
 ) {
   if (alpha <= 0.004 || r <= 0.5) return;
+  const falloff = Math.min(0.98, Math.max(0.02, falloffRaw));
   // bucket the radius: 1px steps below 24, then 8% geometric steps
   const br = r < 24 ? Math.round(r) : Math.round(Math.pow(1.08, Math.round(Math.log(r) / Math.log(1.08))));
   const key = `${color}|${br}|${falloff}`;

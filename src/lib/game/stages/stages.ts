@@ -3,6 +3,7 @@
 import { Stage, Platform, StageHooks } from './Stage';
 import { rand, chance, mulberry32 } from '../core/constants';
 import { cachedLinear, cachedRadial } from '../effects/gradientCache';
+import { blitGlow } from '../effects/glowSprite';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -55,6 +56,38 @@ function neonRect(ctx: Ctx, x: number, y: number, w: number, h: number, color: s
 
 
 // crisp silhouette outline — the single biggest readability upgrade for platforms
+
+/**
+ * Jagged silhouette ridge. Deterministic from `seed`, so it is stable frame to
+ * frame without storing anything, and cheap enough to draw several parallax
+ * layers of.
+ */
+function ridge(
+  ctx: Ctx, baseY: number, height: number, step: number,
+  seed: number, fill: string, rim?: string,
+) {
+  const x0 = -1400, x1 = 1400;
+  ctx.beginPath();
+  ctx.moveTo(x0, baseY + 900);
+  let h = 0;
+  for (let x = x0, i = 0; x <= x1; x += step, i++) {
+    // cheap hash -> stable pseudo-noise
+    const n = Math.sin((i + seed) * 12.9898) * 43758.5453;
+    const r = n - Math.floor(n);
+    h = h * 0.55 + (r - 0.5) * height;
+    ctx.lineTo(x, baseY - Math.abs(h) - height * 0.25);
+  }
+  ctx.lineTo(x1, baseY + 900);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (rim) {
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
 function outlineLast(ctx: Ctx, w = 3, color = 'rgba(6,9,16,0.85)') {
   ctx.strokeStyle = color;
   ctx.lineWidth = w;
@@ -317,66 +350,151 @@ const volcanoHooks: StageHooks = {
     if (s.tick % 8 === 0) particles.ambient('ember', rand(-500, 500), rand(300, 500), chance(0.6) ? '#ff8a3c' : '#ffd166');
   },
   drawBg(ctx, s, tick, camX, camY) {
-    skyGrad(ctx, -900, 600, '#160b10', '#3a1210');
-    // distant magma cracks
-    ctx.strokeStyle = 'rgba(255,110,40,0.25)';
+    // Draw order matters here: everything is painted back to front so that the
+    // lava glow washes the distance but never the rock in front of it.
+
+    // ---- 1. cavern sky: near black at the roof, smouldering at the floor ----
+    skyGrad(ctx, -900, 620, '#0b0407', '#310906');
+
+    // ---- 2. two parallax ridges, rimmed with their own heat ----
+    ctx.save();
+    ctx.translate(-camX * 0.05, -camY * 0.05);
+    ridge(ctx, 330, 300, 120, 3, '#1a0709', 'rgba(255,110,40,0.13)');
+    ctx.restore();
+    ctx.save();
+    ctx.translate(-camX * 0.1, -camY * 0.09);
+    ridge(ctx, 430, 240, 90, 17, '#110406', 'rgba(255,130,50,0.2)');
+    ctx.restore();
+
+    // ---- 3. the erupting cone ----
+    ctx.save();
+    ctx.translate(-430 - camX * 0.08, 430 - camY * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(-320, 0); ctx.lineTo(-70, -430); ctx.lineTo(70, -430); ctx.lineTo(320, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#0d0405';
+    ctx.fill();
+    ctx.fillStyle = `rgba(255,150,60,${(0.55 + Math.sin(tick * 0.03) * 0.18).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.ellipse(0, -428, 70, 13, 0, 0, Math.PI * 2);
+    ctx.fill();
+    blitGlow(ctx, 0, -432, 130, '#ff7a28', 0.3 + Math.sin(tick * 0.03) * 0.08, 0.5);
+    ctx.strokeStyle = 'rgba(255,120,40,0.42)';
     ctx.lineWidth = 3;
-    const wob = Math.sin(tick * 0.02) * 8;
-    for (let i = 0; i < 5; i++) {
-      const bx = -600 + i * 300 - camX * 0.08;
+    for (let i = 0; i < 3; i++) {
+      const off = (i - 1) * 40;
       ctx.beginPath();
-      ctx.moveTo(bx, -300 - camY * 0.08);
-      ctx.quadraticCurveTo(bx + 60 + wob, -120 - camY * 0.08, bx - 30, 40 - camY * 0.08);
+      ctx.moveTo(off * 0.2, -420);
+      ctx.quadraticCurveTo(off * 1.6 + Math.sin(tick * 0.01 + i) * 10, -230, off * 3.2, -10);
       ctx.stroke();
     }
-    // rock silhouettes
-    ctx.fillStyle = '#0d0709';
-    for (const [rx, ry, rw, rh] of [[-700, 100, 300, 500], [500, 60, 400, 560], [-150, -80, 260, 300]] as const) {
+    for (let i = 0; i < 5; i++) {
+      const t = (tick * 0.35 + i * 108) % 540;
+      blitGlow(ctx, Math.sin((t + i * 40) * 0.01) * 60, -430 - t, 50 + t * 0.3, '#2b1a17', 0.4, 0.35);
+    }
+    ctx.restore();
+
+    // ---- 4. the lava lake, well below the arena floor ----
+    ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 660, [
+      [0, 'rgba(255,110,35,0)'], [0.45, 'rgba(255,110,35,0.38)'], [1, 'rgba(255,74,14,0.92)'],
+    ]);
+    ctx.globalAlpha = 0.84 + Math.sin(tick * 0.05) * 0.16;
+    ctx.fillRect(-2200, 380, 4400, 280);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffbd59';
+    for (let i = 0; i < 9; i++) {
+      const bx = ((i * 331 + tick * 0.4) % 1600) - 800;
+      ctx.globalAlpha = 0.5 + Math.sin(tick * 0.1 + i) * 0.3;
       ctx.beginPath();
-      ctx.ellipse(rx - camX * 0.14, ry - camY * 0.14, rw / 2, rh / 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(bx, 468 + Math.sin(tick * 0.07 + i * 2) * 3, 16, 5, 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    // lava lake glow
-    ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 620, [
-      [0, 'rgba(255,120,40,0)'], [0.45, 'rgba(255,120,40,0.62)'], [1, 'rgba(255,60,10,0.9)'],
-    ]);
-    ctx.globalAlpha = 0.81 + Math.sin(tick * 0.05) * 0.19;
-    ctx.fillRect(-2200, 380, 4400, 260);
     ctx.globalAlpha = 1;
-    // lava surface bubbles
-    ctx.fillStyle = '#ffbd59';
-    for (let i = 0; i < 7; i++) {
-      const bx = ((i * 331 + tick * 0.4) % 1400) - 700;
-      ctx.globalAlpha = 0.5 + Math.sin(tick * 0.1 + i) * 0.3;
-      ctx.beginPath(); ctx.ellipse(bx, 452 + Math.sin(tick * 0.07 + i * 2) * 3, 16, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+    // ---- 5. magma fissures crawling through the near rock ----
+    ctx.strokeStyle = `rgba(255,110,40,${(0.2 + Math.sin(tick * 0.02) * 0.05).toFixed(3)})`;
+    ctx.lineWidth = 3;
+    const wob = Math.sin(tick * 0.02) * 8;
+    for (let i = 0; i < 6; i++) {
+      const bx = -720 + i * 290 - camX * 0.14;
+      ctx.beginPath();
+      ctx.moveTo(bx, -260 - camY * 0.14);
+      ctx.quadraticCurveTo(bx + 60 + wob, -90 - camY * 0.14, bx - 30, 80 - camY * 0.14);
+      ctx.stroke();
     }
-    ctx.globalAlpha = 1;
-    // warning text handled by match HUD
+
+    // ---- 6. near rock shoulders, painted over the glow so they stay black ----
+    ctx.fillStyle = '#080304';
+    for (const [rx, ry, rw, rh] of [[-820, 170, 440, 680], [660, 130, 520, 720]] as const) {
+      ctx.beginPath();
+      ctx.ellipse(rx - camX * 0.2, ry - camY * 0.2, rw / 2, rh / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ---- 7. heat shimmer over the lake ----
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      const y = 340 - i * 54;
+      ctx.globalAlpha = 0.035 - i * 0.009;
+      ctx.fillStyle = '#ff7a28';
+      ctx.beginPath();
+      ctx.moveTo(-2200, y);
+      for (let x = -2200; x <= 2200; x += 110) {
+        ctx.lineTo(x, y + Math.sin(x * 0.01 + tick * 0.06 + i) * 9);
+      }
+      ctx.lineTo(2200, y + 54); ctx.lineTo(-2200, y + 54);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
     void s;
   },
   drawPlatform(ctx, s, p) {
     if (p.type === 'solid') {
       ctx.fillStyle = cachedLinear(ctx, 0, p.cy, 0, p.cy + p.h, [
-        [0, '#4a3a3a'], [0.12, '#382c2c'], [1, '#241a1c'],
+        [0, '#3a2c2c'], [0.12, '#2a2022'], [1, '#191113'],
       ]);
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 8); ctx.fill();
       outlineLast(ctx, 3);
       // basalt top
-      ctx.fillStyle = '#5a4a48';
+      ctx.fillStyle = '#4c3d3b';
       ctx.fillRect(p.cx, p.cy, p.w, 6);
-      ctx.fillStyle = '#7a6a66';
+      ctx.fillStyle = '#6b5b57';
       ctx.fillRect(p.cx, p.cy, p.w, 2.5);
-      // cracks glowing
-      ctx.strokeStyle = `rgba(255,110,40,${0.5 + Math.sin(s.tick * 0.08) * 0.25})`;
-      ctx.lineWidth = 2;
-      for (let i = 0; i < 4; i++) {
-        const cx0 = p.cx + (p.w / 5) * (i + 0.7);
+      // Glowing fissures. The old version was three straight segments per
+      // crack, which read as a row of ">" glyphs; these branch, wander and
+      // fade out with depth like cooling rock.
+      const pulse = 0.42 + Math.sin(s.tick * 0.08) * 0.18;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 7; i++) {
+        const cx0 = p.cx + (p.w / 7) * (i + 0.5) + Math.sin(i * 2.7) * 9;
+        const depth = 26 + ((i * 37) % 26);
+        ctx.strokeStyle = `rgba(255,${110 + ((i * 29) % 40)},40,${(pulse * (1 - i / 14)).toFixed(3)})`;
+        ctx.lineWidth = 2.4 - (i % 3) * 0.5;
         ctx.beginPath();
-        ctx.moveTo(cx0, p.cy + 8);
-        ctx.lineTo(cx0 + 8, p.cy + 22);
-        ctx.lineTo(cx0 - 4, p.cy + 38);
+        ctx.moveTo(cx0, p.cy + 4);
+        ctx.lineTo(cx0 + Math.sin(i * 1.3) * 7, p.cy + depth * 0.5);
+        ctx.lineTo(cx0 + Math.sin(i * 2.1) * 12, p.cy + depth);
         ctx.stroke();
+        // a short branch off the middle
+        if (i % 2 === 0) {
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(cx0 + Math.sin(i * 1.3) * 7, p.cy + depth * 0.5);
+          ctx.lineTo(cx0 + Math.sin(i * 1.3) * 7 - 11, p.cy + depth * 0.85);
+          ctx.stroke();
+        }
       }
+      // hot rim right under the basalt cap, where the rock is thinnest
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.09 + Math.sin(s.tick * 0.08) * 0.03;
+      ctx.fillStyle = cachedLinear(ctx, 0, p.cy + 4, 0, p.cy + 22, [
+        [0, 'rgba(255,120,40,1)'], [1, 'rgba(255,120,40,0)'],
+      ]);
+      ctx.fillRect(p.cx, p.cy + 4, p.w, 18);
+      ctx.restore();
     } else {
       ctx.fillStyle = '#3d3034';
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 5); ctx.fill();
@@ -449,8 +567,11 @@ const neonHooks: StageHooks = {
     ctx.save();
     ctx.translate(120 - camX * 0.1, 430 - camY * 0.1);
     ctx.rotate(-0.7 + Math.sin(tick * 0.008) * 0.5);
+    // Additive: a searchlight beam is light being added to the scene. Painted
+    // normally it was a flat grey wedge sitting on top of the skyline.
+    ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = cachedLinear(ctx, 0, 0, 0, -620, [
-      [0, 'rgba(180,220,255,0.14)'], [1, 'rgba(180,220,255,0)'],
+      [0, 'rgba(120,170,220,0.16)'], [1, 'rgba(120,170,220,0)'],
     ]);
     ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-70, -620); ctx.lineTo(70, -620); ctx.closePath(); ctx.fill();
     ctx.restore();
@@ -525,6 +646,17 @@ const frozenHooks: StageHooks = {
       const sy = (rng() * -500 - 40) - camY * 0.02;
       if ((i + Math.floor(tick / 40)) % 7 !== 0) { ctx.fillRect(sx, sy, 2, 2); }
     }
+    // two ridges of far hills, so the three hero peaks have something to sit
+    // in front of instead of a bare gradient
+    ctx.save();
+    ctx.translate(-camX * 0.06, -camY * 0.06);
+    ridge(ctx, 430, 190, 130, 41, '#122844');
+    ctx.restore();
+    ctx.save();
+    ctx.translate(-camX * 0.09, -camY * 0.08);
+    ridge(ctx, 460, 140, 95, 7, '#0e2038');
+    ctx.restore();
+
     // mountains
     ctx.fillStyle = '#173050';
     for (const [mx, mw, mh] of [[-650, 500, 380], [0, 700, 460], [700, 520, 400]] as const) {
@@ -542,11 +674,34 @@ const frozenHooks: StageHooks = {
       ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#173050';
     }
+    // a treeline of conifer silhouettes along the shore
+    ctx.fillStyle = '#0a1a2e';
+    for (let i = 0; i < 26; i++) {
+      const tx = -1100 + i * 88 + Math.sin(i * 3.1) * 22 - camX * 0.16;
+      const ty = 430 - camY * 0.16;
+      const th = 70 + ((i * 53) % 46);
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx + th * 0.26, ty - th);
+      ctx.lineTo(tx + th * 0.52, ty);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     // frozen lake sheen
     ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 640, [
       [0, 'rgba(160,220,255,0.25)'], [1, 'rgba(90,150,220,0.05)'],
     ]);
     ctx.fillRect(-2200, 380, 4400, 280);
+
+    // freezing mist hugging the ice
+    ctx.save();
+    ctx.globalAlpha = 0.26 + Math.sin(tick * 0.012) * 0.06;
+    ctx.fillStyle = cachedLinear(ctx, 0, 300, 0, 470, [
+      [0, 'rgba(200,232,255,0)'], [0.55, 'rgba(200,232,255,0.5)'], [1, 'rgba(200,232,255,0)'],
+    ]);
+    ctx.fillRect(-2200, 300, 4400, 170);
+    ctx.restore();
   },
   drawPlatform(ctx, s, p) {
     const broken = p.broken > 0;
@@ -563,9 +718,22 @@ const frozenHooks: StageHooks = {
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.beginPath(); ctx.ellipse(p.cx + p.w * 0.3, p.cy + 14, 60, 8, 0, 0, Math.PI * 2); ctx.fill();
       // ice cracks
-      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(p.cx + 60, p.cy + 20); ctx.lineTo(p.cx + 110, p.cy + 40); ctx.lineTo(p.cx + 90, p.cy + 55); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 1.4;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 5; i++) {
+        const cx0 = p.cx + p.w * (0.12 + i * 0.19);
+        const cy0 = p.cy + 12 + ((i * 23) % 17);
+        ctx.beginPath();
+        ctx.moveTo(cx0, cy0);
+        ctx.lineTo(cx0 + 26 + Math.sin(i * 1.7) * 12, cy0 + 9);
+        ctx.lineTo(cx0 + 41 + Math.sin(i * 2.9) * 14, cy0 + 24);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx0 + 26 + Math.sin(i * 1.7) * 12, cy0 + 9);
+        ctx.lineTo(cx0 + 12, cy0 + 26);
+        ctx.stroke();
+      }
     } else if (p.type === 'breakable') {
       ctx.fillStyle = '#a8d8f8';
       roundRectPath(ctx, p.cx, p.cy, p.w, p.h, 5); ctx.fill();

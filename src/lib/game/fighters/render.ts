@@ -430,12 +430,25 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: Fighter, tick: num
 
   // ---- white hit-flash silhouette (Smash-style impact feedback) ----
   if (f.hitFlash > 0 && f.state !== 'respawn') {
+    // A solid whiteout reads as impact for exactly one frame; hold it any
+    // longer and the character turns into an unreadable blob for a quarter of
+    // a second. So the fill only covers the impact frame and then collapses
+    // into a bright rim, which keeps the pose legible through the hitstun.
+    const t = clamp(f.hitFlash / 5, 0, 1);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = Math.min(1, f.hitFlash / 3) * 0.85;
-    ctx.fillStyle = '#ffffff';
+    const solid = Math.max(0, t - 0.7) / 0.3;
+    if (solid > 0.01) {
+      ctx.globalAlpha = solid * 0.78;
+      ctx.fillStyle = '#ffffff';
+      roundCapsule(ctx, rx, ry, f.w * 0.95 * VIS, f.h * 0.96 * VIS, f.w * 0.48 * VIS);
+      ctx.fill();
+    }
+    ctx.globalAlpha = t * t * 0.7;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3.4;
     roundCapsule(ctx, rx, ry, f.w * 0.95 * VIS, f.h * 0.96 * VIS, f.w * 0.48 * VIS);
-    ctx.fill();
+    ctx.stroke();
     ctx.restore();
   }
 

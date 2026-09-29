@@ -71,6 +71,9 @@ export function recordingCanvas() {
   const gradient = () => ({
     addColorStop(stop, color) {
       if (typeof stop !== 'number' || Number.isNaN(stop)) throw new Error(`bad gradient stop: ${stop}`);
+      // Browsers throw IndexSizeError outside 0..1; the stub used to accept it
+      // silently, which let an out-of-range stop ship as a runtime crash.
+      if (stop < 0 || stop > 1) throw new Error(`gradient stop out of range: ${stop}`);
       if (typeof color !== 'string' || color === 'undefined' || color.includes('undefined') || color.includes('NaN')) {
         throw new Error(`bad gradient colour: ${color}`);
       }

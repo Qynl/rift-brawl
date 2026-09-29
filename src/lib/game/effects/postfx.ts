@@ -4,11 +4,16 @@
 // composited frame. No pixel readback, no WebGL: the whole thing is three
 // `drawImage` calls onto a pair of persistent offscreen buffers.
 //
-// Bloom works by downsampling the frame hard and adding it back with `lighter`.
-// Dark pixels contribute ~0 under additive blending, so bright FX (hit sparks,
-// auras, KO flashes, neon stage lighting) bleed light into their surroundings
-// while the art stays readable. That single pass is what makes the procedural
-// vector characters look lit rather than drawn.
+// Bloom is a bright-pass, a blur and an additive composite.
+//
+// The bright-pass matters. Adding a plain downsample back over the frame lifts
+// EVERY pixel, not just the highlights, and the result is a washed-out image
+// with no blacks — which is exactly what this used to do: a dark volcanic
+// cavern came out as flat salmon. Squaring the buffer first (multiply it by a
+// copy of itself) crushes the midtones quadratically while leaving highlights
+// alone: 20% grey becomes 4%, a white hit spark stays white. Then bright FX
+// (sparks, auras, KO flashes, neon signs) bleed light into their surroundings
+// and the darks stay dark.
 
 type Buf = { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D };
 
@@ -52,23 +57,35 @@ export function applyPostFX(ctx: CanvasRenderingContext2D, viewW: number, viewH:
     small = buffer(small, w1, h1);
     tiny = buffer(tiny, w2, h2);
     if (small && tiny) {
-      // downsample twice — the second pass is the actual blur
+      // 1a. downsample to quarter res
       small.ctx.globalCompositeOperation = 'copy';
       small.ctx.globalAlpha = 1;
+      small.ctx.imageSmoothingEnabled = true;
       small.ctx.drawImage(src, 0, 0, src.width, src.height, 0, 0, w1, h1);
+
+      // 1b. bright-pass: multiplying the buffer by a copy of itself squares
+      //     every channel, so only genuinely bright pixels survive. Two
+      //     multiplies (cube) is a tighter threshold and still two blits.
       tiny.ctx.globalCompositeOperation = 'copy';
       tiny.ctx.globalAlpha = 1;
+      tiny.ctx.imageSmoothingEnabled = true;
       tiny.ctx.drawImage(small.canvas, 0, 0, w1, h1, 0, 0, w2, h2);
+      tiny.ctx.globalCompositeOperation = 'multiply';
+      tiny.ctx.drawImage(small.canvas, 0, 0, w1, h1, 0, 0, w2, h2);
+      tiny.ctx.drawImage(small.canvas, 0, 0, w1, h1, 0, 0, w2, h2);
+      tiny.ctx.globalCompositeOperation = 'copy';
 
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalCompositeOperation = 'lighter';
       ctx.imageSmoothingEnabled = true;
-      // two offset taps widen the halo without another downsample
-      ctx.globalAlpha = opt.bloom * 0.55;
+      // three offset taps off the same thresholded buffer widen the halo
+      // without paying for another downsample
+      ctx.globalAlpha = opt.bloom * 1.15;
       ctx.drawImage(tiny.canvas, 0, 0, w2, h2, 0, 0, src.width, src.height);
-      ctx.globalAlpha = opt.bloom * 0.3;
-      ctx.drawImage(small.canvas, 0, 0, w1, h1, -2, -2, src.width + 4, src.height + 4);
+      ctx.globalAlpha = opt.bloom * 0.5;
+      const spread = 6 * opt.dpr;
+      ctx.drawImage(tiny.canvas, 0, 0, w2, h2, -spread, -spread, src.width + spread * 2, src.height + spread * 2);
       ctx.restore();
     }
   }

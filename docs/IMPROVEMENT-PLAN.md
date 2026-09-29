@@ -1,6 +1,10 @@
 # RIFT BRAWL — Deep Audit & Overhaul Plan
 
-**Date:** 2026-09-28 · **Branch:** `arena/01a0e93f-rift-brawl` · **Status:** plan only, nothing implemented
+**Date:** 2026-09-28 · **Branch:** `arena/01a0e93f-rift-brawl` · **Status:** in progress — see [PROGRESS.md](./PROGRESS.md)
+
+> This document is the original audit, preserved as written. Every finding
+> below was true of the code as it stood on 2026-09-28. For what has since
+> been fixed, measured and shipped, read `docs/PROGRESS.md`.
 
 ---
 

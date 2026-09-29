@@ -77,6 +77,20 @@ keepAlive('site', process.execPath, [path.join(ROOT, 'tools', 'serve.mjs')], {
 console.log(`[preview] game   -> http://0.0.0.0:${PORT}`);
 
 if (has('--with-lobby')) {
+  // The relay has its own dependency tree, and on a fresh sandbox (or after
+  // anything that prunes node_modules) it is simply not there. Installing it
+  // here beats the alternative: a preview that looks healthy while online
+  // play is quietly dead.
+  const LOBBY_DIR = path.join(ROOT, 'mini-services', 'lobby-service');
+  if (!existsSync(path.join(LOBBY_DIR, 'node_modules', 'socket.io'))) {
+    console.log('[preview] installing lobby dependencies...');
+    try {
+      await run('npm', ['ci', '--no-audit', '--no-fund'], { cwd: LOBBY_DIR });
+    } catch {
+      console.error('[preview] lobby install failed - continuing without online play');
+    }
+  }
+
   keepAlive(
     'lobby',
     process.execPath,

@@ -70,7 +70,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className="antialiased font-game bg-[#07060f] text-white overflow-hidden overscroll-none touch-manipulation">
+      <body className="antialiased font-game bg-[#07060f] text-white touch-manipulation">
         {children}
         <ServiceWorker />
       </body>

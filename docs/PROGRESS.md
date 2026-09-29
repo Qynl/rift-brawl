@@ -172,6 +172,27 @@ training, challenges, replays — works unchanged. See `docs/DEPLOY.md`.
 
 ---
 
+## The landing site
+
+`/` was a canvas and nothing else — empty to a crawler, an unfurl or a screen reader arriving
+before hydration. It is now a full server-rendered marketing site in front of the game.
+
+- **Server-rendered content.** 68 KB of static HTML: hero, twelve roster cards with each
+  fighter's resource rule, six stages, six technical sections, default controls, FAQ and footer.
+  Copy lives in `src/lib/site/content.ts`, typed as `Record<FighterId, …>` so adding a fighter
+  without describing them is a compile error.
+- **The game left the initial bundle.** It used to be imported directly by `page.tsx`. It is now
+  behind `SiteShell`, fetched on click and warmed on idle — first paint went from 660 KB raw /
+  206 KB gzipped to **578 KB / 178 KB**, and that number no longer includes the engine.
+- **The hero console is real.** Fighter and difficulty chosen on the landing page are what the
+  match starts with; `RiftBrawl` takes `initialMode`/`initialFighter`/`initialDifficulty` and
+  mounts straight onto the right screen instead of the main menu.
+- **Deep link and Back.** `/#play` drops into the game; launching pushes a history entry so Back
+  returns to the site. Body scroll is handed over via `body.is-playing` rather than being locked
+  in the layout, which is what used to make the whole document unscrollable.
+
+---
+
 ## Still open
 
 - **Rollback netcode.** The relay is host-authoritative at 30 Hz with interpolation, so remote

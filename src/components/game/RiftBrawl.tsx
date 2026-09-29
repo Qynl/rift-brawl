@@ -22,7 +22,19 @@ import type { LobbyState, MatchStartMsg } from '@/lib/game/net/protocol';
 import { net, NetStatus } from '@/lib/game/net/NetClient';
 
 type Screen = 'menu' | 'select' | 'stage' | 'game' | 'settings' | 'profile' | 'challenges' | 'howto' | 'online' | 'replays';
-type Mode = 'quick' | 'arcade' | 'survival' | 'training' | 'local' | 'challenge' | 'online';
+export type Mode = 'quick' | 'arcade' | 'survival' | 'training' | 'local' | 'challenge' | 'online';
+
+/**
+ * The landing page can hand the game a starting point, so clicking "Arcade"
+ * on the site opens character select for an arcade run rather than dropping
+ * the player on a main menu they have to navigate again. Absent props keep
+ * the original behaviour exactly.
+ */
+export interface RiftBrawlProps {
+  initialMode?: Exclude<Mode, 'challenge'>;
+  initialFighter?: FighterId;
+  initialDifficulty?: AIDifficulty;
+}
 
 export interface NetSession {
   mode: 'host' | 'client';
@@ -99,12 +111,22 @@ function pickRandom<T>(arr: T[], exclude?: T): T {
   return v;
 }
 
-export default function RiftBrawl() {
+export default function RiftBrawl({ initialMode, initialFighter, initialDifficulty }: RiftBrawlProps = {}) {
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
   const [profile, setProfile] = useState<ProfileData>(DEFAULT_PROFILE);
-  const [screen, setScreen] = useState<Screen>('menu');
-  const [mode, setMode] = useState<Mode>('quick');
-  const [select, setSelect] = useState<SelectResult>({ p1: 'vanguard', p2: 'titan', personality: 'balanced', difficulty: 'normal' });
+  // Entry point is resolved once, as initial state rather than in an effect:
+  // mounting straight onto the right screen avoids a frame of main menu and
+  // the extra render that comes with it.
+  const [screen, setScreen] = useState<Screen>(
+    !initialMode ? 'menu' : initialMode === 'online' ? 'online' : 'select',
+  );
+  const [mode, setMode] = useState<Mode>(initialMode ?? 'quick');
+  const [select, setSelect] = useState<SelectResult>({
+    p1: initialFighter ?? 'vanguard',
+    p2: initialFighter === 'titan' ? 'vanguard' : 'titan',
+    personality: 'balanced',
+    difficulty: initialDifficulty ?? 'normal',
+  });
   const [stageId, setStageId] = useState<string>('forest');
   const [challengeId, setChallengeId] = useState<string | null>(null);
   const [arcade, setArcade] = useState<ArcadeRun | null>(null);
@@ -120,7 +142,9 @@ export default function RiftBrawl() {
   // ---- online state ----
   const [lobby, setLobby] = useState<LobbyState | null>(null);
   const [mySlot, setMySlot] = useState(-1);
-  const [onlineRequested, setOnlineRequested] = useState(false);
+  // Entering straight from the site's ONLINE chip must also arm the socket,
+  // otherwise the lobby screen mounts with nothing connecting behind it.
+  const [onlineRequested, setOnlineRequested] = useState(initialMode === 'online');
   const [netStatus, setNetStatus] = useState<NetStatus>('offline');
   const [netError, setNetError] = useState<string | null>(null);
   const [netSession, setNetSession] = useState<NetSession | null>(null);

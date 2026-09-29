@@ -6,6 +6,16 @@ An original browser platform-fighter — percent-based knockback instead of heal
 
 Built with **Next.js, TypeScript and Canvas**. All characters, art and audio are original — every sound effect is synthesized at runtime with the Web Audio API, no external assets.
 
+## The site
+
+`/` is a real landing page, not a bare canvas: roster, stages, controls, FAQ and the technical
+detail, all server-rendered into the static HTML so crawlers, link unfurls and no-JS visitors get
+the actual content. The game is not in the initial bundle at all — it is fetched when someone
+clicks Play (and warmed during idle time before that), which is why first paint is 178 KB gzipped.
+
+The hero console is live: pick a fighter and a difficulty and the match starts with them.
+`/#play` is a deep link straight into the game, and the browser's Back button returns to the site.
+
 ## Features
 
 - **12 original brawlers** — VANGUARD, EMBER, HOOK, TITAN, NOVA, VOLT, FROST, WRAITH, SERAPH, VIPER, TEMPEST and JAEGER. Every fighter has a signature weapon, its own archetype and stats, and a fully authored moveset with real frame data (startup / active / recovery), per-move hitboxes and knockback angles.

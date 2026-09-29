@@ -17,6 +17,19 @@ npm run preview:full  # build if needed + serve + run the online relay
 
 ---
 
+## One click, from a browser
+
+The fastest route to a permanent public URL. Both read a config that is already committed, so
+there is nothing to configure:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl&project-name=rift-brawl&repository-name=rift-brawl)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl)
+
+Vercel is what Arena's own build-to-ship pipeline targets. Either host clones the repo, runs
+`npm run build`, serves `out/`, and hands back an HTTPS URL in about a minute.
+
+---
+
 ## Arena / sandbox preview (the whole game, one command)
 
 On an Arena sandbox — or any VM that exposes ports as `<port>-<id>.example.com` — this is the

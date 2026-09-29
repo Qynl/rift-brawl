@@ -2,6 +2,13 @@
 
 **[▶ Play it](https://qynl.github.io/rift-brawl/)** · [Deploy your own](docs/DEPLOY.md) · [What shipped](docs/PROGRESS.md)
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl&project-name=rift-brawl&repository-name=rift-brawl)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https%3A%2F%2Fgithub.com%2FQynl%2Frift-brawl)
+
+Either button takes about a minute and ends on a live HTTPS URL. Both configs are
+committed, so there is nothing to fill in — the build is `npm run build`, the output is
+`out/`, and there are no environment variables to set unless you want online play.
+
 An original browser platform-fighter — percent-based knockback instead of health bars, stocks, 12 unique brawlers with signature weapons, 6 handcrafted stages, a utility-driven AI, and online lobby play with room codes for up to 4 players.
 
 Built with **Next.js, TypeScript and Canvas**. All characters, art and audio are original — every sound effect is synthesized at runtime with the Web Audio API, no external assets.

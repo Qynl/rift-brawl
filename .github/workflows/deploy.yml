@@ -70,8 +70,14 @@ jobs:
       - name: Disable Jekyll
         run: touch out/.nojekyll
 
+      # enablement: true turns the Pages site on via the workflow's own token,
+      # so no manual setup is needed -- provided Settings -> Pages -> Source is
+      # allowed to be set by Actions. If this step fails with "Not Found", set
+      # that source to "GitHub Actions" by hand once and re-run.
       - uses: actions/configure-pages@v5
         id: pages
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:

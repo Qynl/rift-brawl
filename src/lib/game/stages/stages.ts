@@ -997,13 +997,8 @@ export const STAGE_BUILDERS: Record<string, () => Stage> = {
   },
 };
 
-export const STAGE_IDS = ['forest', 'volcano', 'neon', 'frozen', 'sky', 'rift'];
-
-/** Display names without paying to construct a whole Stage (used by menus/lists). */
-export const STAGE_NAMES: Record<string, string> = {
-  forest: 'FOREST RUINS', volcano: 'VOLCANIC CORE', neon: 'NEON CITY',
-  frozen: 'FROZEN LAKE', sky: 'SKY FORTRESS', rift: 'THE RIFT',
-};
+// Ids and names live in ./meta so menus can import them without the renderer.
+export { STAGE_IDS, STAGE_NAMES } from './meta';
 
 export function buildStage(id: string): Stage {
   return (STAGE_BUILDERS[id] ?? STAGE_BUILDERS.forest)();

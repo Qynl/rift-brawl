@@ -8,18 +8,16 @@ import {
   ProfileData,
 } from '@/lib/game/core/types';
 import { DEFAULT_PROFILE, DEFAULT_SETTINGS, loadSave, saveSave, wipeSave, updateFavorite } from '@/lib/game/core/save';
-import { GameEngine, } from '@/lib/game/Engine';
-import { MatchMods } from '@/lib/game/Match';
+import type { GameEngine } from '@/lib/game/Engine';
+import type { MatchMods } from '@/lib/game/Match';
 import { audio } from '@/lib/game/audio/AudioManager';
-import { STAGE_IDS } from '@/lib/game/stages/stages';
+import { STAGE_IDS } from '@/lib/game/stages/meta';
 import { CHALLENGES } from '@/lib/game/challenges';
-import { FIGHTER_IDS } from '@/lib/game/fighters/configs';
-import { MainMenu, CharacterSelect, StageSelect, SelectResult } from './Screens';
-import { SettingsScreen, ProfileScreen, ChallengesScreen, HowToScreen } from './MetaScreens';
-import { OnlineBrowse, OnlineLobby, cycleChar } from './OnlineScreens';
-import ReplayScreen from './ReplayScreen';
+import { FIGHTER_IDS, cycleChar } from '@/lib/game/fighters/roster';
+import MainMenu from './MainMenu';
+import type { SelectResult } from './Screens';
 import type { ReplayData } from '@/lib/game/replay/format';
-import GameScreen from './GameScreen';
+import dynamic from 'next/dynamic';
 import type { LobbyState, MatchStartMsg } from '@/lib/game/net/protocol';
 import { net, NetStatus } from '@/lib/game/net/NetClient';
 
@@ -35,6 +33,63 @@ export interface NetSession {
 interface ArcadeRun { index: number; wins: number; opponents: { p2: FighterId; difficulty: AIDifficulty; personality: AIPersonality; stage: string }[] }
 
 const ARCADE_LEN = 5;
+
+/**
+ * The simulation (Match, the fixed-timestep Engine, the AI, the netcode) is
+ * only needed once a fight actually starts, so it is split out of the initial
+ * bundle and fetched on the way into a match. `preloadEngine` warms that
+ * import as soon as the player commits to playing, so by the time they have
+ * picked a character it is already resident.
+ */
+const GameScreen = dynamic(() => import('./GameScreen'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center bg-[#07060f]">
+      <div className="text-[11px] tracking-[0.4em] text-white/40 font-bold anim-pulse-soft">ENTERING THE RIFT…</div>
+    </div>
+  ),
+});
+
+let enginePromise: Promise<typeof import('@/lib/game/Engine')> | null = null;
+function preloadEngine() {
+  if (!enginePromise) enginePromise = import('@/lib/game/Engine');
+  return enginePromise;
+}
+
+/**
+ * Every screen other than the landing menu is code-split.
+ *
+ * The menu is the only thing a first-time visitor is guaranteed to see, and it
+ * needs nothing but its own chrome; character select drags in the renderer,
+ * stage select drags in six stage painters, the lobby drags in the socket
+ * client. Loading them on navigation keeps the first paint small, and the
+ * navigation itself is preceded by a click, which is plenty of time.
+ */
+const ScreenFallback = ({ label }: { label: string }) => (
+  <div className="w-full h-full flex items-center justify-center bg-[#07060f]">
+    <div className="text-[11px] tracking-[0.4em] text-white/40 font-bold anim-pulse-soft">{label}</div>
+  </div>
+);
+const loadingOf = (label: string) => function ScreenLoading() { return <ScreenFallback label={label} />; };
+
+const CharacterSelect = dynamic(() => import('./Screens').then(m => ({ default: m.CharacterSelect })),
+  { ssr: false, loading: loadingOf('LOADING FIGHTERS…') });
+const StageSelect = dynamic(() => import('./Screens').then(m => ({ default: m.StageSelect })),
+  { ssr: false, loading: loadingOf('LOADING STAGES…') });
+const SettingsScreen = dynamic(() => import('./MetaScreens').then(m => ({ default: m.SettingsScreen })),
+  { ssr: false, loading: loadingOf('SETTINGS…') });
+const ProfileScreen = dynamic(() => import('./MetaScreens').then(m => ({ default: m.ProfileScreen })),
+  { ssr: false, loading: loadingOf('PROFILE…') });
+const ChallengesScreen = dynamic(() => import('./MetaScreens').then(m => ({ default: m.ChallengesScreen })),
+  { ssr: false, loading: loadingOf('CHALLENGES…') });
+const HowToScreen = dynamic(() => import('./MetaScreens').then(m => ({ default: m.HowToScreen })),
+  { ssr: false, loading: loadingOf('HOW TO PLAY…') });
+const OnlineBrowse = dynamic(() => import('./OnlineScreens').then(m => ({ default: m.OnlineBrowse })),
+  { ssr: false, loading: loadingOf('CONNECTING…') });
+const OnlineLobby = dynamic(() => import('./OnlineScreens').then(m => ({ default: m.OnlineLobby })),
+  { ssr: false, loading: loadingOf('CONNECTING…') });
+const ReplayScreen = dynamic(() => import('./ReplayScreen'),
+  { ssr: false, loading: loadingOf('LOADING REPLAYS…') });
 
 function pickRandom<T>(arr: T[], exclude?: T): T {
   let v = arr[Math.floor(Math.random() * arr.length)];
@@ -74,7 +129,9 @@ export default function RiftBrawl() {
     try { return localStorage.getItem('riftbrawl.name') || 'PLAYER'; } catch { return 'PLAYER'; }
   });
 
-  const [engine] = useState(() => new GameEngine(DEFAULT_SETTINGS));
+  // The engine module is code-split, so the instance appears asynchronously.
+  const [engine, setEngine] = useState<GameEngine | null>(null);
+  const engineRef = useRef<GameEngine | null>(null);
   const loadedRef = useRef(false);
   const [pendingConfig, setPendingConfig] = useState<MatchConfig | null>(null);
 
@@ -85,10 +142,7 @@ export default function RiftBrawl() {
     const { settings: s, profile: p } = loadSave();
     setSettings(s);
     setProfile(p);
-    engine.applySettings(s);
-    // `engine` comes from a useState initialiser and is stable for the life of
-    // the component, so re-running this on it would only re-read localStorage.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    engineRef.current?.applySettings(s);
   }, []);
 
   // ---- audio unlock + menu music ----
@@ -99,8 +153,37 @@ export default function RiftBrawl() {
   const settingsRef = useRef(settings);
   const screenRef = useRef(screen);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+
+  /** Load the engine chunk (if needed) and hand back a configured instance. */
+  const ensureEngine = useCallback(async (): Promise<GameEngine> => {
+    if (engineRef.current) return engineRef.current;
+    const mod = await preloadEngine();
+    if (engineRef.current) return engineRef.current;
+    const e = new mod.GameEngine(settingsRef.current);
+    e.applySettings(settingsRef.current);
+    engineRef.current = e;
+    setEngine(e);
+    return e;
+  }, []);
+
+
+  // Warm the code-split simulation chunk the moment the player heads toward a
+  // fight (character select, stage select, a lobby, the replay theatre) and
+  // guarantee an instance exists by the time the game screen mounts.
+  useEffect(() => {
+    if (screen === 'menu' || screen === 'settings' || screen === 'profile' || screen === 'howto') return;
+    void ensureEngine();
+  }, [screen, ensureEngine]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
   useEffect(() => { watchingRef.current = watching; }, [watching]);
+
+  // Mirror the reduced-motion preference onto <html> so the CSS menu
+  // animations obey the in-game toggle, not just the OS setting.
+  useEffect(() => {
+    const el = document.documentElement;
+    if (settings.reduceMotion) el.setAttribute('data-reduce-motion', '1');
+    else el.removeAttribute('data-reduce-motion');
+  }, [settings.reduceMotion]);
 
   useEffect(() => {
     const unlock = () => {
@@ -123,7 +206,7 @@ export default function RiftBrawl() {
 
   const changeSettings = (s: GameSettings) => {
     setSettings(s);
-    engine.applySettings(s);
+    engineRef.current?.applySettings(s);
     audio.setVolumes({ master: s.masterVol, music: s.musicVol, sfx: s.sfxVol });
     saveSave(s, profile);
   };
@@ -145,6 +228,9 @@ export default function RiftBrawl() {
       particleQ: settings.particles === 'high' ? 1 : settings.particles === 'medium' ? 0.6 : 0.35,
       showFps: settings.showFps,
       quality: settings.quality,
+      reduceMotion: settings.reduceMotion,
+      hudScale: settings.hudScale,
+      playerMarkers: settings.playerMarkers,
     };
   }, [settings]);
 
@@ -414,12 +500,12 @@ export default function RiftBrawl() {
   }, []);
 
   const resume = () => {
-    engine.setPaused(false);
+    engineRef.current?.setPaused(false);
     setOverlay('none');
   };
 
   const restartMatch = () => {
-    engine.setPaused(false);
+    engineRef.current?.setPaused(false);
     setOverlay('none');
     setMatchKey(k => k + 1);
   };
@@ -553,7 +639,12 @@ export default function RiftBrawl() {
         />
       )}
 
-      {screen === 'game' && cfg && (
+      {screen === 'game' && cfg && !engine && (
+        <div className="w-full h-full flex items-center justify-center bg-[#07060f]">
+          <div className="text-[11px] tracking-[0.4em] text-white/40 font-bold anim-pulse-soft">ENTERING THE RIFT…</div>
+        </div>
+      )}
+      {screen === 'game' && cfg && engine && (
         <GameScreen
           key={matchKey}
           engine={engine}
@@ -585,7 +676,7 @@ export default function RiftBrawl() {
 
       {screen === 'settings' && (
         <SettingsScreen settings={settings} onChange={changeSettings} onBack={() => setScreen('menu')}
-          onResetData={() => { wipeSave(); setSettings(DEFAULT_SETTINGS); setProfile(DEFAULT_PROFILE); engine.applySettings(DEFAULT_SETTINGS); }} />
+          onResetData={() => { wipeSave(); setSettings(DEFAULT_SETTINGS); setProfile(DEFAULT_PROFILE); engineRef.current?.applySettings(DEFAULT_SETTINGS); }} />
       )}
       {screen === 'profile' && <ProfileScreen profile={profile} onBack={() => setScreen('menu')} />}
       {screen === 'challenges' && <ChallengesScreen completed={profile.challenges} onStart={startChallenge} onBack={() => setScreen('menu')} />}

@@ -27,6 +27,10 @@ export interface MatchMods extends ChallengeModifiers {
   particleQ: number;
   showFps: boolean;
   quality: string;
+  // ---- accessibility (see GameSettings) ----
+  reduceMotion?: boolean;
+  hudScale?: number;
+  playerMarkers?: boolean;
 }
 
 export interface MatchCallbacks {
@@ -1140,6 +1144,7 @@ export class Match implements World {
     // The launch vector at the instant of death drives the whole shot: the
     // shockwave, the beam and the screen-edge flare all point the way out.
     this.koCam.reduceFlash = !!this.mods.reduceFlash;
+    this.koCam.reduceMotion = !!this.mods.reduceMotion;
     this.koCam.trigger({
       x: ex, y: ey,
       vx: f.vx, vy: f.vy,
@@ -1196,6 +1201,46 @@ export class Match implements World {
       this.respawnQueue.push({ f, timer: 60 });
       f.lastHitBy = null;
     }
+  }
+
+  /**
+   * A small shape floating over each fighter: triangle, square, circle,
+   * diamond. Player colour is still used, but it is no longer the only
+   * channel carrying "which one is me", which is what colour-blind players
+   * (and anyone watching a 4-player brawl) actually need.
+   */
+  private drawPlayerMarker(ctx: CanvasRenderingContext2D, f: Fighter, alpha: number) {
+    if (f.state === 'ko' || f.state === 'respawn') return;
+    const x = lerp(f.px, f.x, alpha);
+    const y = lerp(f.py, f.y, alpha) - f.h * 0.78 - 16;
+    const r = 8;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    switch (f.playerIndex) {
+      case 0: // triangle
+        ctx.moveTo(0, -r); ctx.lineTo(r * 0.92, r * 0.72); ctx.lineTo(-r * 0.92, r * 0.72);
+        break;
+      case 1: // square
+        ctx.rect(-r * 0.78, -r * 0.78, r * 1.56, r * 1.56);
+        break;
+      case 2: // circle
+        ctx.arc(0, 0, r * 0.84, 0, Math.PI * 2);
+        break;
+      default: // diamond
+        ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0);
+        break;
+    }
+    ctx.closePath();
+    ctx.fillStyle = f.cfg.info.colors.glow;
+    ctx.fill();
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = 'rgba(8,8,18,0.9)';
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+    ctx.restore();
   }
 
   private updateCamera() {
@@ -1275,6 +1320,11 @@ export class Match implements World {
     // shields on top
     for (const f of this.fighters) drawShield(ctx, f, this.tick);
 
+    // accessibility: distinct SHAPE per player slot, readable without colour
+    if (this.mods.playerMarkers) {
+      for (const f of this.fighters) this.drawPlayerMarker(ctx, f, alpha);
+    }
+
     // attack trails
     for (const f of this.fighters) {
       if (f.state === 'attack' && f.move && f.moveFrame > f.move.startup && f.moveFrame <= f.move.startup + moveActive(f.move)) {
@@ -1307,7 +1357,7 @@ export class Match implements World {
       ctx.fillStyle = `rgba(${cam.flashColor},${(cam.flash * 0.55).toFixed(3)})`;
       ctx.fillRect(0, 0, this.viewW, this.viewH);
     }
-    if (this.speedlines > 0 && !this.mods.reduceFlash) this.renderSpeedlines(ctx);
+    if (this.speedlines > 0 && !this.mods.reduceFlash && !this.mods.reduceMotion) this.renderSpeedlines(ctx);
 
     // Edge flare / star KO / letterbox. Drawn before post-processing so the
     // bloom pass picks them up and they feel like light, not like decals.
@@ -1316,7 +1366,7 @@ export class Match implements World {
     // ---- post processing: bloom + impact aberration ----
     // Runs on the world layer only, BEFORE the HUD, so the UI stays crisp.
     if (this.mods.quality !== 'low') {
-      const koPunch = this.koCam.active ? Math.max(0, 1 - this.koCam.t / 16) : 0;
+      const koPunch = this.koCam.active && !this.mods.reduceMotion ? Math.max(0, 1 - this.koCam.t / 16) : 0;
       const impact = Math.max(clamp(this.koFlashTimer / 8, 0, 1), koPunch);
       applyPostFX(ctx, this.viewW, this.viewH, {
         bloom: this.mods.quality === 'high' ? 0.5 : 0.3,
@@ -1420,18 +1470,22 @@ export class Match implements World {
     const pad = Math.max(18, W * 0.02);
     const n = this.fighters.length;
 
+    // Accessibility: the whole card cluster scales, so a player who cannot
+    // read 12px percent counters can make them 40% bigger.
+    const hs = clamp(this.mods.hudScale ?? 1, 0.8, 1.4);
+
     // player cards: 1v1 keeps the big corner plates; 3-4P spread across the bottom
     if (n <= 2) {
-      this.drawPlayerCard(ctx, this.fighters[0], pad, H - 108, this.portraits[0], false, 1);
-      this.drawPlayerCard(ctx, this.fighters[1], W - pad, H - 108, this.portraits[1], true, 1);
+      this.drawPlayerCard(ctx, this.fighters[0], pad, H - 108 * hs, this.portraits[0], false, hs);
+      this.drawPlayerCard(ctx, this.fighters[1], W - pad, H - 108 * hs, this.portraits[1], true, hs);
     } else {
-      const scale = n === 3 ? 0.82 : 0.72;
+      const scale = (n === 3 ? 0.82 : 0.72) * hs;
       const cardW = 262 * scale;
       const gap = 10;
       const totalW = n * cardW + (n - 1) * gap;
       let x0 = (W - totalW) / 2;
       for (let i = 0; i < n; i++) {
-        this.drawPlayerCard(ctx, this.fighters[i], x0, H - 96, this.portraits[i], false, scale);
+        this.drawPlayerCard(ctx, this.fighters[i], x0, H - 96 * scale, this.portraits[i], false, scale);
         x0 += cardW + gap;
       }
     }

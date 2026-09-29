@@ -66,6 +66,10 @@ export class GameEngine {
       this.match.mods.showFps = s.showFps;
       this.match.mods.reduceFlash = s.reduceFlashing;
       this.match.mods.quality = s.quality;
+      this.match.mods.reduceMotion = s.reduceMotion;
+      this.match.mods.hudScale = s.hudScale;
+      this.match.mods.playerMarkers = s.playerMarkers;
+      this.match.camera.reduceShake = s.reduceMotion ? 0 : s.screenShake;
     }
     this.resize();
   }
@@ -167,8 +171,8 @@ export class GameEngine {
     this.match.mods.showFps = this.settings.showFps;
     this.match.mods.reduceFlash = this.settings.reduceFlashing;
     (window as unknown as { __match?: Match }).__match = this.match;
-    // shake setting
-    this.match.camera.reduceShake = this.settings.screenShake;
+    // shake setting (reduced motion overrides it entirely)
+    this.match.camera.reduceShake = this.settings.reduceMotion ? 0 : this.settings.screenShake;
     // music
     audio.ensure();
     audio.playMusic(THEME_BY_STAGE[config.stageId] ?? 'forest');

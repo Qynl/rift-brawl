@@ -49,6 +49,9 @@ export class KOCinematic {
   shot: KOShot | null = null;
   /** set true by the owner when the player asked for reduced flashing */
   reduceFlash = false;
+  /** set true by the owner when the player asked for reduced motion — the
+   *  freeze and the camera snap are skipped, the effects still draw */
+  reduceMotion = false;
 
   get active(): boolean { return this.t >= 0 && this.t < DURATION; }
 
@@ -72,7 +75,7 @@ export class KOCinematic {
    * feels sluggish.
    */
   timeScale(): number {
-    if (!this.active) return 1;
+    if (!this.active || this.reduceMotion) return 1;
     const t = this.t;
     if (t < 6) return 0.06;
     if (t < 22) return 0.06 + ((t - 6) / 16) * 0.74;
@@ -85,7 +88,7 @@ export class KOCinematic {
    * the blast instead of the survivors, which is what turns a KO into a shot.
    */
   focus(): { x: number; y: number; strength: number } | null {
-    if (!this.active || !this.shot) return null;
+    if (!this.active || !this.shot || this.reduceMotion) return null;
     const t = this.t;
     if (t > 30) return null;
     // ease out: full authority at impact, released over half a second

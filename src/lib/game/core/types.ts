@@ -259,6 +259,17 @@ export interface GameSettings {
   quality: 'low' | 'medium' | 'high';
   showFps: boolean;
   reduceFlashing: boolean;
+  // ---- accessibility ----
+  /** kills camera shake, zoom punch, speed lines and the KO freeze */
+  reduceMotion: boolean;
+  /** 0.8 … 1.4 multiplier on the in-match HUD */
+  hudScale: number;
+  /**
+   * Draws a distinct SHAPE over each fighter (triangle / square / circle /
+   * diamond). Colour alone cannot separate four players for a colour-blind
+   * viewer; shape can.
+   */
+  playerMarkers: boolean;
   keybinds: {
     p1: Partial<Record<ActionName, KeyBindValue>>;
     p2: Partial<Record<ActionName, KeyBindValue>>;

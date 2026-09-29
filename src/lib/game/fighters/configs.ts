@@ -703,6 +703,7 @@ function tune(cfg: FighterConfig): FighterConfig {
 
 // ------------------------------------------------------------------
 
+import { FIGHTER_IDS as ROSTER_IDS } from './roster';
 import { FighterId } from '../core/types';
 export const FIGHTER_CONFIGS: Record<FighterId, FighterConfig> = {
   vanguard: tune(VANGUARD),
@@ -725,4 +726,13 @@ export const FIGHTER_LIST: FighterConfig[] = [
   FIGHTER_CONFIGS.seraph, FIGHTER_CONFIGS.viper, FIGHTER_CONFIGS.tempest, FIGHTER_CONFIGS.jaeger,
 ];
 
-export const FIGHTER_IDS: FighterId[] = FIGHTER_LIST.map(f => f.info.id);
+export { FIGHTER_IDS } from './roster';
+
+// Keep the lightweight id list honest against the real configs.
+if (process.env.NODE_ENV !== 'production') {
+  const declared = ROSTER_IDS.join(',');
+  const actual = FIGHTER_LIST.map(f => f.info.id).join(',');
+  if (declared !== actual) {
+    throw new Error(`roster.ts is out of sync with configs.ts:\n  roster:  ${declared}\n  configs: ${actual}`);
+  }
+}

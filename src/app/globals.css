@@ -591,3 +591,28 @@ input[type="range"].rift-slider::-moz-range-thumb {
 .rb-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .rb-scroll::-webkit-scrollbar-thumb { background: rgba(0,229,176,0.28); border-radius: 4px; }
 .rb-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------------------------------------------------------------------
+   Reduced motion.
+   The in-match camera effects are handled by the engine (see the accessibility
+   section of the settings screen); this covers the menu chrome, which would
+   otherwise keep sliding, floating and pulsing for someone who asked it not to.
+   Honours both the OS-level preference and the in-game toggle, which sets
+   data-reduce-motion on <html>.
+--------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-reduce-motion="1"] *,
+html[data-reduce-motion="1"] *::before,
+html[data-reduce-motion="1"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}

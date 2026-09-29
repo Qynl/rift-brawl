@@ -130,7 +130,6 @@ export function SettingsScreen({ settings, onChange, onBack, onResetData }: {
             </div>
             <OptionRow label="Graphics" value={settings.quality} options={['low', 'medium', 'high'] as const} onSelect={(v) => set({ quality: v as 'low' | 'medium' | 'high' })} />
             <Toggle label="Show FPS" v={settings.showFps} on={v => set({ showFps: v })} />
-            <Toggle label="Reduce flashing" v={settings.reduceFlashing} on={v => set({ reduceFlashing: v })} />
             <button
               className="rb-btn !py-2 mt-1"
               onClick={() => {
@@ -141,6 +140,24 @@ export function SettingsScreen({ settings, onChange, onBack, onResetData }: {
             >
               <span className="idx">⛶</span> TOGGLE FULLSCREEN
             </button>
+          </section>
+
+          <section className="panel rounded-lg p-5 space-y-3">
+            <h3 className="rb-sec">ACCESSIBILITY</h3>
+            <Toggle label="Reduce flashing" v={settings.reduceFlashing} on={v => set({ reduceFlashing: v })} />
+            <Toggle label="Reduce motion" v={settings.reduceMotion} on={v => set({ reduceMotion: v })} />
+            <p className="text-[10px] leading-relaxed text-white/35 -mt-1">
+              Removes camera shake, zoom punch, speed lines and the KO freeze. The fight itself is unchanged.
+            </p>
+            <Toggle label="Player shape markers" v={settings.playerMarkers} on={v => set({ playerMarkers: v })} />
+            <p className="text-[10px] leading-relaxed text-white/35 -mt-1">
+              Marks each fighter with a distinct shape — triangle, square, circle, diamond — so players stay
+              tellable apart without relying on colour.
+            </p>
+            <Slider
+              label="HUD size" v={settings.hudScale} min={0.8} max={1.4}
+              on={v => set({ hudScale: v })} fmt={v => `${Math.round(v * 100)}%`}
+            />
           </section>
 
           <section className="panel rounded-lg p-5">

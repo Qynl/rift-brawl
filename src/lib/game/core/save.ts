@@ -15,6 +15,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   quality: 'high',
   showFps: false,
   reduceFlashing: false,
+  reduceMotion: false,
+  hudScale: 1,
+  playerMarkers: false,
   keybinds: {
     p1: { ...DEFAULT_KEYBINDS_P1 },
     p2: { ...DEFAULT_KEYBINDS_P2 },

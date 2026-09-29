@@ -40,7 +40,16 @@ A workflow is already committed at `.github/workflows/deploy.yml`. It needs **on
 by a repo admin**, which an automated token is not allowed to do:
 
 1. **Settings → Pages → Build and deployment → Source → "GitHub Actions"**
-2. Push to `main` (or run the workflow manually from the Actions tab).
+2. Push to `main` — merging the working branch counts.
+
+Everything before that switch already passes on CI (typecheck, determinism, render smoke and the
+export itself); `configure-pages` is the only step that fails, and only because the site does not
+exist yet. Neither the workflow's own `GITHUB_TOKEN` nor an app token is permitted to create it,
+so a human has to click it once.
+
+The workflow also triggers on `arena/**` branches, but the `github-pages` environment only
+accepts deployments from the default branch unless you widen its deployment-branch rule — so in
+practice, merge to `main`.
 
 The site publishes to `https://<owner>.github.io/<repo>/` — for this repo,
 **https://qynl.github.io/rift-brawl/**.

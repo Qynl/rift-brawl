@@ -61,10 +61,18 @@ function shutdown(code = 0) {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
+// node_modules does not survive a sandbox restart, and `npx next build`
+// without it silently downloads a *different* Next into a temp dir and then
+// fails to resolve the project's own copy. Install first, always locally.
+if (!existsSync(path.join(ROOT, 'node_modules', 'next'))) {
+  console.log('[preview] installing dependencies...');
+  await run('npm', ['ci', '--no-audit', '--no-fund']);
+}
+
 const needsBuild = has('--rebuild') || !existsSync(path.join(OUT, 'index.html'));
 if (needsBuild) {
   console.log('[preview] building the static export...');
-  await run('npx', ['next', 'build']);
+  await run(path.join(ROOT, 'node_modules', '.bin', 'next'), ['build']);
 } else {
   console.log('[preview] reusing the existing out/ (pass --rebuild to force)');
 }

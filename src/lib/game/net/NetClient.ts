@@ -9,6 +9,9 @@ import { ALL_ACTIONS } from '../core/types';
 
 export type NetStatus = 'offline' | 'connecting' | 'online';
 
+/** Port the lobby relay listens on (mini-services/lobby-service). */
+const LOBBY_PORT = 3003;
+
 interface NetHandlers {
   onLobbyState?: (lobby: LobbyState) => void;
   onJoined?: (info: { code: string; slot: number; lobby: LobbyState }) => void;
@@ -23,14 +26,35 @@ class NetClient {
   private connecting = false;
 
   /**
-   * Lobby endpoint. Defaults to the same origin with the sandbox's port
-   * transform, but an explicit NEXT_PUBLIC_LOBBY_URL wins so a real deployment
-   * can point at a hosted relay instead of a hardcoded dev port.
+   * Where the lobby relay lives.
+   *
+   * An explicit NEXT_PUBLIC_LOBBY_URL always wins, so a real deployment can
+   * point at a hosted relay. Failing that we try to work it out from the page
+   * we are being served from, because the relay is almost always a sibling of
+   * the game on the same machine:
+   *
+   *   <port>-<id>.e2b.app   preview host -> 3003-<id>.e2b.app
+   *   localhost:3000        dev / local  -> localhost:3003
+   *
+   * and finally the reverse-proxy port transform used by the original harness.
+   * Returning a bad guess is cheap: the socket fails to connect and the online
+   * screen says so. Nothing else in the game depends on this.
    */
   private endpoint(): string {
     const configured = process.env.NEXT_PUBLIC_LOBBY_URL;
     if (configured) return configured;
-    return '/?XTransformPort=3003';
+    if (typeof window !== 'undefined') {
+      const { protocol, hostname, port } = window.location;
+      // Sandbox previews address ports by prefixing the hostname.
+      const preview = /^(\d+)-(.+)$/.exec(hostname);
+      if (preview) return `${protocol}//${LOBBY_PORT}-${preview[2]}`;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return `${protocol}//${hostname}:${LOBBY_PORT}`;
+      }
+      // Served from a port on some other host: try the same host, relay port.
+      if (port) return `${protocol}//${hostname}:${LOBBY_PORT}`;
+    }
+    return `/?XTransformPort=${LOBBY_PORT}`;
   }
   private handlers: NetHandlers = {};
   private inputQueue: { h: number; p: number; ax: number; ay: number }[] = [];

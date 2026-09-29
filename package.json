@@ -21,7 +21,9 @@
     "sim:shot": "node tools/sim/shot.mjs",
     "build:pages": "NEXT_PUBLIC_BASE_PATH=/rift-brawl NEXT_PUBLIC_SITE_URL=https://qynl.github.io/rift-brawl next build",
     "build:server": "NEXT_OUTPUT=standalone next build",
-    "start:server": "node .next/standalone/server.js"
+    "start:server": "node .next/standalone/server.js",
+    "preview": "node tools/preview.mjs",
+    "preview:full": "node tools/preview.mjs --with-lobby"
   },
   "dependencies": {
     "next": "^16.1.1",

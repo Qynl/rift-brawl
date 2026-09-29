@@ -54,12 +54,14 @@ folder of files any host will serve, and once the service worker has cached the
 shell it keeps working offline.
 
 ```bash
-npm run build      # → out/   static export
-npm start          # serve out/ on http://0.0.0.0:3000
+npm run build         # → out/   static export
+npm start             # serve out/ on http://0.0.0.0:3000
+npm run preview:full  # build if needed + serve + run the online relay
 ```
 
 | Target | How |
 | --- | --- |
+| **Arena / sandbox preview** | `npm run preview:full` — builds, serves on `:3000` and runs the lobby relay on `:3003`. Online play works with no configuration; the client derives the relay from the page host. |
 | **GitHub Pages** | Already wired up — an admin flips Settings → Pages → Source → "GitHub Actions" once, then every push to `main` publishes to `https://<owner>.github.io/<repo>/`. |
 | **Netlify** | Drag `out/` onto [app.netlify.com/drop](https://app.netlify.com/drop), or connect the repo (`netlify.toml` is committed). |
 | **Vercel** | `npx vercel --prod` (`vercel.json` is committed). |

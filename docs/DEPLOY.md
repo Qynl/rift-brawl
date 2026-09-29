@@ -10,9 +10,49 @@ training, challenges, replays — works with no backend at all, and offline once
 has cached the shell.
 
 ```
-npm run build     # -> out/    static export (the default)
-npm start         # serve out/ on http://0.0.0.0:3000
+npm run build         # -> out/    static export (the default)
+npm start             # serve out/ on http://0.0.0.0:3000
+npm run preview:full  # build if needed + serve + run the online relay
 ```
+
+---
+
+## Arena / sandbox preview (the whole game, one command)
+
+On an Arena sandbox — or any VM that exposes ports as `<port>-<id>.example.com` — this is the
+whole deployment:
+
+```bash
+npm run preview:full
+```
+
+It builds the static export if `out/` is missing, serves it on `0.0.0.0:3000`, and starts the
+lobby relay on `3003` (health on `3004`). Both bind to `0.0.0.0`, so the preview URL is
+shareable as-is.
+
+**Online multiplayer works here with no configuration.** `NEXT_PUBLIC_LOBBY_URL` is a build-time
+variable, and the sandbox hostname is not knowable at build time, so the client works the relay
+out from the page it was served from:
+
+| Served from | Relay it dials |
+| --- | --- |
+| `3000-abc123.e2b.app` | `https://3003-abc123.e2b.app` |
+| `localhost:3000` | `http://localhost:3003` |
+| `game.example.com:8080` | `http://game.example.com:3003` |
+| anything else | `/?XTransformPort=3003` (reverse-proxy transform) |
+
+An explicit `NEXT_PUBLIC_LOBBY_URL` always overrides this. A wrong guess costs nothing: the
+socket fails to connect and the online screen says no server is available, while the rest of the
+game is untouched.
+
+Two things do **not** survive a sandbox restart: `node_modules` and `out/`. Bring it back with:
+
+```bash
+npm ci && npm run preview:full
+```
+
+A sandbox URL lives as long as the sandbox does. For a permanent address, use one of the hosts
+below.
 
 ---
 

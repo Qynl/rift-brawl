@@ -14,6 +14,8 @@ export const PHYS = {
   groundStick: 6.0,       // max snap distance to platform when walking
   coyoteFrames: 5,
   jumpBufferFrames: 5,
+  /** frames of grounded jump anticipation before leaving the floor (universal) */
+  jumpSquatFrames: 4,
   respawnInvuln: 110,
   respawnPlatformTime: 100,
   maxFallDist: 0,

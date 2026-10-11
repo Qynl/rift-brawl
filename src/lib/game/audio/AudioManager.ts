@@ -13,7 +13,32 @@ type SfxName =
   | 'proj_fire' | 'proj_boomer' | 'trap' | 'counter' | 'charge' | 'charge_release' | 'teleport'
   | 'parry' | 'poison'
   | 'tech' | 'gust' | 'bow' | 'net' | 'scatter' | 'snap'
-  | 'combo1' | 'combo2' | 'combo3';
+  | 'combo1' | 'combo2' | 'combo3'
+  | 'heart';
+
+export type FighterBark = 'attack' | 'hurt' | 'hurt_big' | 'ko' | 'victory';
+
+// ------------ fighter voice print ------------
+// pitch (Hz): the character's register — heavies rumble, lightweights snap
+// timbre:     the waveform the "vocal cords" make
+// bright:     formant scale — >1 brighter/younger, <1 darker/throatier
+interface VoicePrint { pitch: number; timbre: OscillatorType; bright: number }
+// exported for the unit suite — every roster fighter must have a print here
+export const VOICES: Record<string, VoicePrint> = {
+  vanguard: { pitch: 150, timbre: 'sawtooth', bright: 1.0 },
+  ember: { pitch: 210, timbre: 'square', bright: 1.15 },
+  hook: { pitch: 170, timbre: 'sawtooth', bright: 1.05 },
+  titan: { pitch: 95, timbre: 'sawtooth', bright: 0.9 },
+  nova: { pitch: 190, timbre: 'triangle', bright: 1.2 },
+  volt: { pitch: 230, timbre: 'square', bright: 1.3 },
+  frost: { pitch: 120, timbre: 'sawtooth', bright: 0.85 },
+  wraith: { pitch: 110, timbre: 'sine', bright: 0.75 },
+  seraph: { pitch: 180, timbre: 'triangle', bright: 1.25 },
+  viper: { pitch: 160, timbre: 'sawtooth', bright: 0.8 },
+  tempest: { pitch: 215, timbre: 'triangle', bright: 1.2 },
+  jaeger: { pitch: 145, timbre: 'sawtooth', bright: 0.95 },
+  default: { pitch: 160, timbre: 'sawtooth', bright: 1.0 },
+};
 
 export interface AudioVolumes { master: number; music: number; sfx: number }
 
@@ -223,6 +248,79 @@ export class AudioManager {
         // wet acidic blub
         this.tone(180, 0.14, 'sine', 0.09, 90);
         this.noise(0.1, 0.05, 'lowpass', 700, 300);
+        break;
+      case 'heart':
+        // two low thumps — last-stock high-damage dread (lub-dub)
+        this.tone(72, 0.1, 'sine', 0.32, 46);
+        this.tone(60, 0.13, 'sine', 0.26, 40, 0.17);
+        break;
+    }
+  }
+
+  // ---------------- fighter voices (synthesized barks) ----------------
+  voicesEnabled = true;
+  private lastVoice = new Map<string, number>();
+
+  setVoicesEnabled(on: boolean) { this.voicesEnabled = on; }
+
+  /**
+   * One syllable through a two-formant throat. A saw/square source falls in
+   * pitch while two swept bandpass resonances shape it into something the ear
+   * accepts as a voice — no samples, purely the same WebAudio toolkit as the
+   * rest of the soundscape.
+   */
+  private voiceBody(pitch: number, timbre: OscillatorType, dur: number, vol: number, formant: number, when = 0) {
+    if (!this.ctx || !this.sfxGain) return;
+    const t0 = this.ctx.currentTime + when;
+    const o = this.ctx.createOscillator();
+    o.type = timbre;
+    o.frequency.setValueAtTime(Math.max(40, pitch * 1.28), t0);
+    o.frequency.exponentialRampToValueAtTime(Math.max(40, pitch * 0.7), t0 + dur);
+    const f1 = this.ctx.createBiquadFilter(); f1.type = 'bandpass'; f1.Q.value = 2.2;
+    f1.frequency.setValueAtTime(720 * formant, t0);
+    f1.frequency.exponentialRampToValueAtTime(Math.max(60, 480 * formant), t0 + dur);
+    const f2 = this.ctx.createBiquadFilter(); f2.type = 'bandpass'; f2.Q.value = 3.1;
+    f2.frequency.setValueAtTime(1500 * formant, t0);
+    f2.frequency.exponentialRampToValueAtTime(Math.max(120, 950 * formant), t0 + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(vol, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(f1); f1.connect(g); o.connect(f2); f2.connect(g); g.connect(this.sfxGain);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+
+  playVoice(id: string, kind: FighterBark) {
+    if (!this.ctx || !this.voicesEnabled || !this.sfxEnabled) return;
+    if (this.ctx.state === 'suspended') { void this.ctx.resume(); }
+    const def = VOICES[id] ?? VOICES.default;
+    // rate limit so strings of hits never turn into a chatterbox
+    const key = `${id}:${kind}`;
+    const now = this.ctx.currentTime;
+    const gap = kind === 'ko' || kind === 'victory' ? 0.25 : 0.5;
+    if ((this.lastVoice.get(key) ?? -9) + gap > now) return;
+    this.lastVoice.set(key, now);
+    const p = def.pitch, t = def.timbre, b = def.bright;
+    switch (kind) {
+      case 'attack':
+        this.voiceBody(p * 1.35, t, 0.11, 0.09, b);
+        this.noise(0.07, 0.04, 'bandpass', 2400, 3600);
+        break;
+      case 'hurt':
+        this.voiceBody(p * 1.1, t, 0.13, 0.085, b);
+        break;
+      case 'hurt_big':
+        this.voiceBody(p, t, 0.22, 0.13, b * 0.95);
+        this.noise(0.15, 0.06, 'bandpass', 1600, 800);
+        break;
+      case 'ko':
+        this.voiceBody(p * 1.5, t, 0.34, 0.12, b * 1.05);
+        this.voiceBody(p * 0.75, t, 0.3, 0.055, b * 0.8, 0.03);
+        this.noise(0.3, 0.07, 'bandpass', 1800, 500);
+        break;
+      case 'victory':
+        this.voiceBody(p * 1.2, t, 0.1, 0.1, b);
+        this.voiceBody(p * 1.6, t, 0.17, 0.1, b * 1.1, 0.11);
         break;
     }
   }

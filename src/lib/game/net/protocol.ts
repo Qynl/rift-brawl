@@ -72,10 +72,10 @@ export interface NetTrap {
 }
 
 export type NetEvent =
-  | { k: 'hit'; x: number; y: number; a: number; p: number; c: string; s: string }
+  | { k: 'hit'; x: number; y: number; a: number; p: number; c: string; s: string; v?: number }
   | { k: 'sfx'; s: string }
   | { k: 'swing'; x: number; y: number; c: number; d: number; r: number; w: number; col: string; mk?: string; sp?: number; st?: string }
-  | { k: 'ko'; x: number; y: number; c: string }
+  | { k: 'ko'; x: number; y: number; c: string; v?: number }
   | { k: 'ann'; t: string; sub?: string; size: number; color: string }
   | { k: 'parry'; x: number; y: number }
   | { k: 'flash'; a: number; c: string }

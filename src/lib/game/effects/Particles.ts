@@ -28,7 +28,10 @@ export interface Particle {
 export class ParticleSystem {
   pool: Particle[] = [];
   cap: number;
-  private head = 0;
+  /** stack of inactive pool slots — make spawn O(1) instead of a 700-wide scan */
+  private free: number[] = [];
+  /** round-robin recycling order when the burst cap is hit (oldest dies first) */
+  private recycleHead = 0;
 
   constructor(cap = 700) {
     this.cap = cap;
@@ -38,21 +41,39 @@ export class ParticleSystem {
         life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0, drag: 1,
         rot: 0, vrot: 0, additive: true, wobble: 0, label: '', len: 0, style: '',
       });
+      this.free.push(cap - 1 - i); // pops start at slot 0
     }
   }
 
-  clear() { for (const p of this.pool) p.active = false; }
+  clear() {
+    this.free.length = 0;
+    for (let i = 0; i < this.cap; i++) {
+      this.pool[i].active = false;
+      this.free.push(i);
+    }
+  }
 
   setBudget(budget: number) { /* cap rendering density */ this._budget = budget; }
   private _budget = 1;
 
   private spawn(): Particle | null {
-    for (let i = 0; i < this.cap; i++) {
-      const p = this.pool[this.head];
-      this.head = (this.head + 1) % this.cap;
-      if (!p.active) return p;
+    // fast path: a retired slot is waiting — constant time
+    const si = this.free.pop();
+    if (si !== undefined) return this.pool[si];
+    // pool is saturated: steal the slot that has been alive the longest so a
+    // fresh impact always beats a half-dead mote. Round-robin head keeps the
+    // steal to a bounded walk instead of a full min-life scan.
+    let best: Particle | null = null;
+    let bestIdx = -1;
+    let bestLife = Infinity;
+    for (let n = 0; n < 48 && n < this.cap; n++) {
+      const i = (this.recycleHead + n) % this.cap;
+      const p = this.pool[i];
+      if (p.life < bestLife) { bestLife = p.life; best = p; bestIdx = i; }
     }
-    return null;
+    if (!best) return null;
+    this.recycleHead = (bestIdx + 1) % this.cap;
+    return best;
   }
 
   emit(opts: Partial<Particle> & { x: number; y: number }) {
@@ -551,10 +572,11 @@ export class ParticleSystem {
   }
 
   update(dtFrames: number) {
-    for (const p of this.pool) {
+    for (let i = 0; i < this.cap; i++) {
+      const p = this.pool[i];
       if (!p.active) continue;
       p.life -= dtFrames;
-      if (p.life <= 0) { p.active = false; continue; }
+      if (p.life <= 0) { p.active = false; this.free.push(i); continue; }
       if (p.wobble > 0) p.vx += Math.sin(p.life * 0.2) * p.wobble;
       p.vy += p.grav;
       p.vx *= p.drag; p.vy *= p.drag;

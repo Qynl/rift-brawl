@@ -13,7 +13,9 @@
 
 import { ActionName, ALL_ACTIONS, InputState, MatchConfig, emptyInput } from '../core/types';
 
-export const REPLAY_VERSION = 1;
+// v2: jumpsquat was connected in the simulation — old input tracks replay to a
+// different sim, so recordings from before this build are refused at load.
+export const REPLAY_VERSION = 2;
 
 export interface ReplayMeta {
   version: number;

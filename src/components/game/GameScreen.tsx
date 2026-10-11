@@ -8,6 +8,7 @@ import { MatchConfig, MatchResult, GameSettings, FighterId } from '@/lib/game/co
 import { MatchMods } from '@/lib/game/Match';
 import { FIGHTER_CONFIGS } from '@/lib/game/fighters/configs';
 import { fmtTime } from '@/lib/game/core/constants';
+import { debugToolsEnabled } from '@/lib/game/core/debug';
 import { audio } from '@/lib/game/audio/AudioManager';
 import { loadSave, saveSave } from '@/lib/game/core/save';
 import type { NetSession } from './RiftBrawl';
@@ -64,8 +65,9 @@ export default function GameScreen(props: Props) {
     } else {
       engine.start(config, mods, netSession ? netSession.mode : 'off');
     }
-    // QA/debug hook: lets instrumented browser tests inspect the live match
-    (window as unknown as Record<string, unknown>).__rb = engine;
+    // QA/debug hook (opt-in via ?debug): lets instrumented browser tests
+    // inspect the live match without shipping a permanent global to everyone
+    if (debugToolsEnabled()) (window as unknown as Record<string, unknown>).__rb = engine;
     // netplay transport wiring lives outside the component scope
     wireNetTransport(engine, netSession);
 

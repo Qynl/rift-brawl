@@ -6,6 +6,7 @@
 import type { Socket } from 'socket.io-client';
 import type { LobbyState, MatchStartMsg, NetSnapshot } from './protocol';
 import { ALL_ACTIONS } from '../core/types';
+import { debugToolsEnabled } from '../core/debug';
 
 export type NetStatus = 'offline' | 'connecting' | 'online';
 
@@ -100,7 +101,7 @@ class NetClient {
       timeout: 10000,
     });
     this.socket = s;
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && debugToolsEnabled()) {
       (window as unknown as { __net?: NetClient }).__net = this;
     }
 

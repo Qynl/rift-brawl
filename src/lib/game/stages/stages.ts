@@ -144,8 +144,9 @@ function godRays(ctx: Ctx, tick: number, cx: number, cy: number, rgb: string, re
 
 const forestHooks: StageHooks = {
   update(s, _f, particles) {
-    if (s.tick % 26 === 0) particles.ambient('leaf', rand(-700, 700), rand(-500, -200), chance(0.5) ? '#7fce6a' : '#b8e05c');
-    if (s.tick % 40 === 0) particles.ambient('firefly', rand(-650, 650), rand(-100, 160), 'rgba(190,255,150,0.9)');
+    // the canopy breathes: leaf-fall drifts down, fireflies pulse off the floor
+    if (s.tick % 17 === 0) particles.ambient('leaf', rand(-760, 760), rand(-460, -180), chance(0.55) ? '#7fce6a' : '#b8e05c');
+    if (s.tick % 28 === 0) particles.ambient('firefly', rand(-680, 680), rand(-120, 300), 'rgba(190,255,150,0.9)');
   },
   drawBg(ctx, s, tick, camX, camY) {
     // ---- dusk sky: deep indigo falling into a warm teal horizon ----
@@ -348,6 +349,10 @@ const volcanoHooks: StageHooks = {
         break;
     }
     if (s.tick % 8 === 0) particles.ambient('ember', rand(-500, 500), rand(300, 500), chance(0.6) ? '#ff8a3c' : '#ffd166');
+    // the cone breathes: slow smoke columns off the crater, a fountain of
+    // sparks arcing out of the mouth every few frames
+    if (s.tick % 14 === 0) particles.emit({ type: 'smoke', x: -430 + rand(-40, 40), y: -390 + rand(-16, 10), vx: rand(-0.3, 0.3), vy: rand(-1.5, -0.9), maxLife: rand(120, 210), size: rand(16, 30), color: 'rgba(58,40,38,0.45)', grav: -0.002, drag: 0.995, additive: false });
+    if (s.tick % 5 === 0) particles.emit({ type: 'ember', x: -430 + rand(-46, 46), y: -406, vx: rand(-1.6, 1.6), vy: rand(-6.5, -3.5), maxLife: rand(40, 95), size: rand(1.6, 3.2), color: chance(0.6) ? '#ff8a3c' : '#ffd166', grav: 0.12, drag: 0.99 });
   },
   drawBg(ctx, s, tick, camX, camY) {
     // Draw order matters here: everything is painted back to front so that the
@@ -394,6 +399,30 @@ const volcanoHooks: StageHooks = {
     }
     ctx.restore();
 
+    // ---- 3b. a second lavafall pours off the right shoulder into the lake ----
+    {
+      const fx = 720 - camX * 0.12;
+      const top = -120 - camY * 0.12, bot = 460 - camY * 0.12;
+      ctx.fillStyle = cachedLinear(ctx, fx - 24, 0, fx + 24, 0, [
+        [0, 'rgba(255,110,35,0)'], [0.5, 'rgba(255,150,50,0.8)'], [1, 'rgba(255,110,35,0)'],
+      ]);
+      ctx.beginPath();
+      ctx.moveTo(fx - 19, top);
+      for (let yy = top; yy <= bot; yy += 34) ctx.lineTo(fx - 19 + Math.sin(yy * 0.05 + tick * 0.09) * 6, yy);
+      ctx.lineTo(fx + 19, bot);
+      for (let yy = bot; yy >= top; yy -= 34) ctx.lineTo(fx + 19 + Math.sin(yy * 0.045 - tick * 0.08) * 6, yy);
+      ctx.closePath();
+      ctx.fill();
+      // molten core line + splash at the base
+      ctx.strokeStyle = 'rgba(255,220,120,0.75)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(fx, top + 4);
+      for (let yy = top + 4; yy <= bot; yy += 40) ctx.lineTo(fx + Math.sin(yy * 0.06 + tick * 0.12) * 4, yy);
+      ctx.stroke();
+      blitGlow(ctx, fx, bot, 80, '#ff8a28', 0.42, 0.5);
+    }
+
     // ---- 4. the lava lake, well below the arena floor ----
     ctx.fillStyle = cachedLinear(ctx, 0, 380, 0, 660, [
       [0, 'rgba(255,110,35,0)'], [0.45, 'rgba(255,110,35,0.38)'], [1, 'rgba(255,74,14,0.92)'],
@@ -411,16 +440,50 @@ const volcanoHooks: StageHooks = {
     }
     ctx.globalAlpha = 1;
 
-    // ---- 5. magma fissures crawling through the near rock ----
-    ctx.strokeStyle = `rgba(255,110,40,${(0.2 + Math.sin(tick * 0.02) * 0.05).toFixed(3)})`;
-    ctx.lineWidth = 3;
+    // ---- 4b. the lake throws its heat up under the whole arena ----
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.09 + Math.sin(tick * 0.04) * 0.025;
+    ctx.fillStyle = cachedRadial(ctx, 0, 560, 60, 0, 560, 480, [
+      [0, 'rgba(255,90,25,1)'], [1, 'rgba(255,90,25,0)'],
+    ]);
+    ctx.fillRect(-2200, 60, 4400, 1000);
+    ctx.restore();
+
+    // ---- 5. basalt strata behind the arena: thin heat-lit bands so the
+    //    playable band has texture instead of a flat brown wall ----
+    {
+      const strata: [number, string, number][] = [[-210, '#26090b', 26], [-130, '#1e0709', 20], [-58, '#281013', 22], [16, '#200b0d', 18]];
+      for (const [sy, scol, sh] of strata) {
+        ctx.fillStyle = scol;
+        ctx.globalAlpha = 1;
+        ctx.fillRect(-2200, sy - camY * 0.12, 4400, sh);
+        // heat edge along the top of each band
+        ctx.fillStyle = `rgba(255,100,35,${(0.1 + Math.sin(tick * 0.03 + sy) * 0.03).toFixed(3)})`;
+        ctx.fillRect(-2200, sy - camY * 0.12, 4400, 2.5);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ---- 6. magma fissures crawling through the near rock ----
+    ctx.strokeStyle = `rgba(255,110,40,${(0.34 + Math.sin(tick * 0.02) * 0.07).toFixed(3)})`;
+    ctx.lineWidth = 3.4;
     const wob = Math.sin(tick * 0.02) * 8;
-    for (let i = 0; i < 6; i++) {
-      const bx = -720 + i * 290 - camX * 0.14;
+    for (let i = 0; i < 9; i++) {
+      const bx = -1080 + i * 270 - camX * 0.14;
       ctx.beginPath();
       ctx.moveTo(bx, -260 - camY * 0.14);
       ctx.quadraticCurveTo(bx + 60 + wob, -90 - camY * 0.14, bx - 30, 80 - camY * 0.14);
       ctx.stroke();
+      // a branch crack adds the hand of rock
+      if (i % 2 === 0) {
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(bx + 24 + wob * 0.5, -140 - camY * 0.14);
+        ctx.quadraticCurveTo(bx + 70, -60 - camY * 0.14, bx + 44, 10 - camY * 0.14);
+        ctx.stroke();
+        ctx.lineWidth = 3.4;
+      }
     }
 
     // ---- 6. near rock shoulders, painted over the glow so they stay black ----
@@ -511,7 +574,7 @@ const volcanoHooks: StageHooks = {
 
 const neonHooks: StageHooks = {
   update(_s, _f, particles) {
-    if (_s.tick % 5 === 0) {
+    if (_s.tick % 4 === 0) {
       // light rain
       particles.emit({
         type: 'snow', x: rand(-800, 800), y: rand(-500, -350), vx: -1.2, vy: 7,
@@ -575,6 +638,47 @@ const neonHooks: StageHooks = {
     ]);
     ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-70, -620); ctx.lineTo(70, -620); ctx.closePath(); ctx.fill();
     ctx.restore();
+    // elevated traffic: two light-stream lanes far below — amber heading one
+    // way, red trailing the other, with faster gaps between the dashes
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [laneY, dir, col, spd] of [[338, 1, 'rgba(255,190,110,0.5)', 3.2], [366, -1, 'rgba(255,80,90,0.45)', 2.4]] as const) {
+      for (let i = 0; i < 11; i++) {
+        const span = 2100;
+        const px = ((i * 197 + tick * spd * dir) % span + span * 2) % span - 1050 - camX * 0.06;
+        const py = laneY - camY * 0.06;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2.6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(px, py + Math.sin(i * 3.3) * 3);
+        ctx.lineTo(px + dir * (34 + (i % 3) * 16), py + Math.sin(i * 3.3) * 3);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    // holo billboard on a near tower: animated scan band sweeps the face
+    {
+      const bx = -700 - camX * 0.22, by = -140 - camY * 0.22;
+      ctx.fillStyle = 'rgba(10,18,34,0.85)';
+      ctx.fillRect(bx, by, 150, 220);
+      ctx.strokeStyle = 'rgba(90,220,255,0.5)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx, by, 150, 220);
+      // scan band
+      const scanY = by + ((tick * 1.7) % 220);
+      ctx.fillStyle = 'rgba(120,230,255,0.14)';
+      ctx.fillRect(bx + 3, scanY, 144, 26);
+      // glyph bars (fake copy — three columns of blinking dashes)
+      for (let r = 0; r < 9; r++) {
+        for (let cI = 0; cI < 5; cI++) {
+          const on = ((r * 7 + cI * 13 + Math.floor(tick / 18)) % 11) > 4;
+          if (!on) continue;
+          ctx.fillStyle = (r + cI) % 3 === 0 ? 'rgba(255,110,170,0.55)' : 'rgba(110,220,255,0.5)';
+          ctx.fillRect(bx + 14 + cI * 26, by + 18 + r * 22, 16, 6);
+        }
+      }
+    }
   },
   drawPlatform(ctx, s, p) {
     if (p.type === 'solid') {
@@ -612,7 +716,7 @@ const neonHooks: StageHooks = {
 
 const frozenHooks: StageHooks = {
   update(s, _f, particles) {
-    if (s.tick % 12 === 0) particles.ambient('snow', rand(-800, 800), rand(-500, -250), 'rgba(235,245,255,0.85)');
+    if (s.tick % 10 === 0) particles.ambient('snow', rand(-800, 800), rand(-500, -250), 'rgba(235,245,255,0.85)');
   },
   drawBg(ctx, _s, tick, camX, camY) {
     skyGrad(ctx, -900, 600, '#0b1d33', '#2a4a6a');
@@ -701,6 +805,27 @@ const frozenHooks: StageHooks = {
       [0, 'rgba(200,232,255,0)'], [0.55, 'rgba(200,232,255,0.5)'], [1, 'rgba(200,232,255,0)'],
     ]);
     ctx.fillRect(-2200, 300, 4400, 170);
+    ctx.restore();
+    // buried light: glints of trapped ice twinkle under the lake surface —
+    // deterministic spots, each pulsing on its own slow phase
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const grng = mulberry32(1234);
+    for (let i = 0; i < 12; i++) {
+      const gx = grng() * 1700 - 850 - camX * 0.1;
+      const gy = 400 + grng() * 180 - camY * 0.1;
+      const pulse = Math.sin(tick * 0.028 + i * 1.9);
+      if (pulse < 0.25) continue;
+      const a = (pulse - 0.25) * 0.4;
+      const s = 2.2 + (i % 3);
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = '#cfeaff';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(gx - s, gy); ctx.lineTo(gx + s, gy);
+      ctx.moveTo(gx, gy - s); ctx.lineTo(gx, gy + s);
+      ctx.stroke();
+    }
     ctx.restore();
   },
   drawPlatform(ctx, s, p) {
@@ -829,6 +954,35 @@ const skyHooks: StageHooks = {
       ctx.fillStyle = '#4d7a5c';
       ctx.beginPath(); ctx.ellipse(px, py - 3 * isc, 84 * isc, 16 * isc, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#3f6a52';
+    }
+    // cloud sea: a slow-breathing blanket of far cloud tops well below the arena
+    {
+      const cy0 = 560 - camY * 0.04;
+      ctx.fillStyle = 'rgba(235,245,252,0.2)';
+      for (let i = 0; i < 6; i++) {
+        const bx = (i * 380 - 1150) - camX * 0.04 + Math.sin(tick * 0.008 + i) * 30;
+        ctx.beginPath();
+        ctx.ellipse(bx, cy0 + Math.sin(tick * 0.011 + i * 1.7) * 10, 200 + (i % 3) * 50, 30 + (i % 2) * 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(200,225,240,0.14)';
+      ctx.fillRect(-2200, cy0 + 20, 4400, 700);
+    }
+    // birds: two slow chevrons crossing the high sky
+    ctx.strokeStyle = 'rgba(30,50,70,0.55)';
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    for (let g = 0; g < 2; g++) {
+      const gx = ((tick * (0.55 + g * 0.2) + g * 900) % 2400) - 1200 - camX * 0.05;
+      const gy = -320 - g * 110 - camY * 0.05 + Math.sin(tick * 0.02 + g) * 12;
+      for (let i = 0; i < 5; i++) {
+        const off = i * 16;
+        const flap = Math.sin(tick * 0.24 + i * 1.3) * 3;
+        ctx.beginPath();
+        ctx.moveTo(gx - off - 5, gy + off * 0.5 - flap);
+        ctx.quadraticCurveTo(gx - off, gy + off * 0.5 + 3, gx - off + 5, gy + off * 0.5 - flap);
+        ctx.stroke();
+      }
     }
     // wind indicator arrows when active
     if (s.wind.phase === 'warn' || s.wind.phase === 'active') {
@@ -971,6 +1125,71 @@ const riftHooks: StageHooks = {
       ctx.beginPath();
       ctx.moveTo(0, -bs); ctx.lineTo(bs * 0.6, 0); ctx.lineTo(0, bs); ctx.lineTo(-bs * 0.6, 0);
       ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    // slow rock islands tumbling far off — rift debris with real outlines
+    const drng = mulberry32(77);
+    for (let i = 0; i < 6; i++) {
+      const rx = drng() * 1800 - 900 - camX * 0.2;
+      const ry = drng() * 900 - 520 - camY * 0.2 + Math.sin(tick * 0.01 + i * 2.1) * 14;
+      const rs = 26 + drng() * 40;
+      ctx.save();
+      ctx.translate(rx, ry);
+      ctx.rotate(tick * 0.004 * (i % 2 ? 1 : -1) + i);
+      ctx.fillStyle = 'rgba(46,34,86,0.9)';
+      ctx.strokeStyle = 'rgba(150,110,255,0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let v = 0; v < 6; v++) {
+        const aa = (v / 6) * Math.PI * 2;
+        const rr = rs * (0.75 + ((i * 31 + v * 17) % 10) / 22);
+        const PX = Math.cos(aa) * rr, PY = Math.sin(aa) * rr * 0.8;
+        if (v === 0) ctx.moveTo(PX, PY); else ctx.lineTo(PX, PY);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // inner crystal glint
+      ctx.fillStyle = `rgba(190,150,255,${(0.3 + Math.sin(tick * 0.03 + i) * 0.15).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(0, -rs * 0.3); ctx.lineTo(rs * 0.18, 0); ctx.lineTo(0, rs * 0.3); ctx.lineTo(-rs * 0.18, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    // shooting star every few seconds across the high void
+    if (tick % 340 < 22) {
+      const st = tick % 340;
+      const sx2 = 800 - st * 46 - camX * 0.03;
+      const sy2 = -460 + st * 10 - camY * 0.03;
+      ctx.strokeStyle = `rgba(255,255,255,${(0.7 * (1 - st / 22)).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx2, sy2);
+      ctx.lineTo(sx2 + 44, sy2 - 10);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(170,130,255,${(0.35 * (1 - st / 22)).toFixed(3)})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(sx2 + 30, sy2 - 7);
+      ctx.lineTo(sx2 + 78, sy2 - 18);
+      ctx.stroke();
+    }
+    // rift lightning: a jagged arc snaps across the vortex heart every ~4s
+    if (tick % 260 < 4) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = 'rgba(200,160,255,0.5)';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      let lx = -camX * 0.12 - 60, ly = -60 - camY * 0.12;
+      ctx.moveTo(lx, ly);
+      for (let i = 0; i < 9; i++) {
+        lx += 14 + ((i * 37) % 18);
+        ly += (((i * 53) % 41) - 20);
+        ctx.lineTo(lx, ly);
+      }
+      ctx.stroke();
       ctx.restore();
     }
     // stars
@@ -1173,7 +1392,7 @@ export function buildStage(id: string): Stage {
 }
 
 /** Render a static preview thumbnail of a stage onto a canvas */
-export function renderStagePreview(stage: Stage, canvas: HTMLCanvasElement) {
+export function renderStagePreview(stage: Stage, canvas: HTMLCanvasElement, tick = 40) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const W = canvas.width, H = canvas.height;
@@ -1183,7 +1402,7 @@ export function renderStagePreview(stage: Stage, canvas: HTMLCanvasElement) {
   ctx.translate(W / 2, H * 0.52);
   ctx.scale(scale, scale);
   ctx.translate(0, -130);
-  stage.hooks.drawBg?.(ctx, stage, 40, 0, 0, 'low');
+  stage.hooks.drawBg?.(ctx, stage, tick, 0, 0, 'low');
   for (const p of stage.platforms) {
     ctx.save();
     stage.hooks.drawPlatform?.(ctx, stage, p, 40);

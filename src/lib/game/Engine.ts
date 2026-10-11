@@ -3,6 +3,7 @@
 import { STEP_MS } from './core/constants';
 import { InputManager } from './core/input';
 import { GameSettings, MatchConfig, MatchResult } from './core/types';
+import { debugToolsEnabled } from './core/debug';
 import { Match, MatchMods } from './Match';
 import { audio } from './audio/AudioManager';
 import { ReplayData, ReplayPlayback, ReplayRecorder } from './replay/format';
@@ -62,6 +63,7 @@ export class GameEngine {
     this.quality = s.quality;
     this.input.setBinds(s.keybinds.p1, s.keybinds.p2);
     audio.setVolumes({ master: s.masterVol, music: s.musicVol, sfx: s.sfxVol });
+    audio.setVoicesEnabled(s.voices !== false);
     if (this.match) {
       this.match.mods.showFps = s.showFps;
       this.match.mods.reduceFlash = s.reduceFlashing;
@@ -170,7 +172,7 @@ export class GameEngine {
     }
     this.match.mods.showFps = this.settings.showFps;
     this.match.mods.reduceFlash = this.settings.reduceFlashing;
-    (window as unknown as { __match?: Match }).__match = this.match;
+    if (debugToolsEnabled()) (window as unknown as { __match?: Match }).__match = this.match;
     // shake setting (reduced motion overrides it entirely)
     this.match.camera.reduceShake = this.settings.reduceMotion ? 0 : this.settings.screenShake;
     // music

@@ -48,6 +48,9 @@ jobs:
       - name: Render smoke (all fighters × stages × visual states)
         run: npm run sim:render
 
+      - name: Unit tests (physics invariants, replay codec, caches, KO lifecycle)
+        run: npm run test:unit
+
       - name: Build
         run: npx next build
 

@@ -21,6 +21,7 @@ import { lightingFor, drawBounceLight, drawReflection, drawGrade, type StageLigh
 import { AIController } from './ai/AIController';
 import { ReplayPlayback, ReplayRecorder } from './replay/format';
 import { KOCinematic } from './effects/cinematic';
+import { KOFlyout } from './effects/kofly';
 import type { NetEvent, NetProjectile, NetSnapshot, NetTrap } from './net/protocol';
 
 export interface MatchMods extends ChallengeModifiers {
@@ -112,6 +113,8 @@ export class Match implements World {
   /** lighting description for the current stage (see stages/lighting.ts) */
   private light: StageLighting = lightingFor('');
   readonly koCam = new KOCinematic();
+  /** flying KO bodies: blast streaks, receding star tumbles, camera slams */
+  readonly koFly = new KOFlyout();
   private hazardWarned = false;
   private speedlines = 0; // radial screen lines after heavy launches / KOs
 
@@ -221,6 +224,11 @@ export class Match implements World {
     this.camera.punchZoom(a);
     this.pushEv({ k: 'zoom', a });
   }
+  /** World → audio: fighter voice barks (grunts, yells, KO cries, victory quips) */
+  onBark(f: Fighter, kind: 'attack' | 'hurt' | 'hurt_big' | 'ko' | 'victory') {
+    this.audio.playVoice(f.id, kind);
+  }
+
   emitSfx(s: string) {
     this.audio.play(s as Parameters<AudioManager['play']>[0]);
     this.pushEv({ k: 'sfx', s });
@@ -346,6 +354,9 @@ export class Match implements World {
 
   step() {
     if (this.paused) return;
+    // KO fly-out is presentation-only: it watches the roster and runs on every
+    // code path (solo host sim, client mirror, replay playback) identically.
+    this.koFly.update(this.fighters, this.stage.blast, this.tick);
     if (this.netMode === 'client') { this.stepClientFrame(); return; }
     this.tick++;
     if (this.fade > 0) this.fade = Math.max(0, this.fade - 0.03);
@@ -474,12 +485,15 @@ export class Match implements World {
 
   private applyNetEvent(ev: NetEvent) {
     switch (ev.k) {
-      case 'hit':
+      case 'hit': {
         this.particles.hitBurst(ev.x, ev.y, ev.a, ev.p, ev.c, 1);
         this.particles.damageNumber(ev.x, ev.y - 14, 0, ev.p);
         this.audio.play(ev.s as Parameters<AudioManager['play']>[0], rand(0, 2) | 0);
+        const vic = ev.v !== undefined ? this.fighters[ev.v] : null;
+        if (vic) this.audio.playVoice(vic.id, ev.p >= 0.6 ? 'hurt_big' : 'hurt');
         this.shake(clamp(0.14 + ev.p * 0.55, 0.14, 0.85));
         break;
+      }
       case 'sfx':
         this.audio.play(ev.s as Parameters<AudioManager['play']>[0]);
         break;
@@ -490,14 +504,17 @@ export class Match implements World {
           dir: ev.d as 1 | -1, span: ev.sp ?? 2.25, grounded: false, style: ev.st ?? '',
         });
         break;
-      case 'ko':
+      case 'ko': {
         this.particles.koBlast(ev.x, ev.y, ev.c, 1, true);
         this.audio.play('ko');
+        const vic = ev.v !== undefined ? this.fighters[ev.v] : null;
+        if (vic) this.audio.playVoice(vic.id, 'ko');
         this.shake(1.15);
         this.flash(0.55, '255,255,255');
         this.punchZoom(1.25);
         this.speedlines = 34;
         break;
+      }
       case 'ann':
         this.announcements.push({ text: ev.t, sub: ev.sub, timer: 60, max: 60, size: ev.size, color: ev.color });
         break;
@@ -638,6 +655,7 @@ export class Match implements World {
     const idle: InputState = emptyInput();
     this.stage.update(this.fighters, this.particles, this.mods);
     for (const f of this.fighters) f.update(idle);
+    if (this.countdown === 189) { this.announce('3', 110, '#ffffff'); this.audio.play('count'); }
     if (this.countdown === 130) { this.announce('2', 110, '#ffffff'); this.audio.play('count'); }
     if (this.countdown === 70) { this.announce('1', 110, '#ffffff'); this.audio.play('count'); }
     if (this.countdown <= 0) {
@@ -645,6 +663,8 @@ export class Match implements World {
       this.announce('FIGHT!', 84, '#5cffce', undefined, 50);
       this.audio.play('go');
       this.shake(0.35);
+      this.punchZoom(0.9);
+      this.speedlines = Math.max(this.speedlines, 16);
     }
     this.particles.update(1);
     this.updateCamera();
@@ -656,8 +676,8 @@ export class Match implements World {
     if (this.timeLimitFrames > 0 && !this.suddenDeath) {
       this.timeLeftFrames--;
       const secs = Math.ceil(this.timeLeftFrames / 60);
-      if (this.timeLeftFrames % 60 === 0 && secs > 0 && secs <= 5) {
-        this.audio.play('count');
+      if (this.timeLeftFrames % 60 === 0 && secs > 0 && secs <= 10) {
+        this.audio.play('count', secs <= 5 ? 1 : 0);
         this.announce(String(secs), 80, '#ffd166', undefined, 40);
       }
       if (this.timeLeftFrames === 60 * 30) this.announce('30 SECONDS', 34, '#ffd166', undefined, 60);
@@ -721,6 +741,9 @@ export class Match implements World {
       if (f.stocks === 1) lastStock = true;
     }
     this.audio.setIntensity(clamp(maxDmg / 160 + (lastStock ? 0.45 : 0), 0, 1));
+    // dread pulse: someone is on their last stock deep in the red — a low
+    // heartbeat rides under the music until it's over, one way or the other
+    if (lastStock && maxDmg >= 100 && this.tick % 46 === 0) this.audio.play('heart');
   }
 
   private updateHudAnim() {
@@ -770,6 +793,7 @@ export class Match implements World {
           }
         }
         this.audio.play('victory');
+        this.onBark(winF, 'victory');
       } else {
         this.audio.play('defeat');
       }
@@ -1083,7 +1107,9 @@ export class Match implements World {
     this.particles.damageNumber(hx, hy - 14, dmg, power);
     const sfxName = dmg >= 11 ? 'hit3' : dmg >= 7 ? 'hit2' : 'hit1';
     this.audio.play(sfxName as Parameters<AudioManager['play']>[0], rand(0, 2) | 0);
-    this.pushEv({ k: 'hit', x: Math.round(hx), y: Math.round(hy), a: angle, p: Math.round(power * 100) / 100, c: color, s: sfxName });
+    // vocal reaction: the victim cries out on anything that actually launches
+    this.onBark(victim, kb > KB.tumbleThreshold ? 'hurt_big' : 'hurt');
+    this.pushEv({ k: 'hit', x: Math.round(hx), y: Math.round(hy), a: angle, p: Math.round(power * 100) / 100, c: color, s: sfxName, v: victim.playerIndex });
     this.shake(clamp(0.14 + power * 0.55, 0.14, 0.85));
     if (strong || kb > 15) {
       this.punchZoom(sweetspot ? 0.8 : 0.55);
@@ -1156,8 +1182,9 @@ export class Match implements World {
       kind,
       final: this.fighters.filter(x => x.stocks > 0).length <= 1,
     });
-    this.pushEv({ k: 'ko', x: Math.round(ex), y: Math.round(ey), c: f.cfg.info.colors.glow });
+    this.pushEv({ k: 'ko', x: Math.round(ex), y: Math.round(ey), c: f.cfg.info.colors.glow, v: f.playerIndex });
     this.audio.play('ko');
+    this.onBark(f, 'ko');
     this.shake(1.15);
     this.flash(0.55, '255,255,255');
     this.punchZoom(1.25);
@@ -1358,6 +1385,10 @@ export class Match implements World {
       }
     }
 
+    // KO'd bodies still flying out (blast streaks / star tumble) — drawn above
+    // the living fighters; the dead earned one more moment on stage
+    this.koFly.renderWorld(ctx, this.camera, this.viewW, this.viewH);
+
     // particles (world space)
     this.particles.render(ctx, 1);
 
@@ -1378,6 +1409,9 @@ export class Match implements World {
     // Edge flare / star KO / letterbox. Drawn before post-processing so the
     // bloom pass picks them up and they feel like light, not like decals.
     this.koCam.renderScreen(ctx, this.viewW, this.viewH);
+
+    // screen KOs: the rare body that comes at the GLASS instead of the blast
+    this.koFly.renderScreen(ctx, !!this.mods.reduceMotion);
 
     // ---- post processing: bloom + impact aberration ----
     // Runs on the world layer only, BEFORE the HUD, so the UI stays crisp.

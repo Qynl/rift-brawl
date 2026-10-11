@@ -254,6 +254,8 @@ export interface GameSettings {
   masterVol: number;   // 0..1
   musicVol: number;
   sfxVol: number;
+  /** synthesized fighter barks — attack grunts, big-hit yells, KO cries */
+  voices: boolean;
   screenShake: number; // 0..1.5
   particles: 'low' | 'medium' | 'high';
   quality: 'low' | 'medium' | 'high';

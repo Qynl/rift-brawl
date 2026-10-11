@@ -119,6 +119,10 @@ export function SettingsScreen({ settings, onChange, onBack, onResetData }: {
             <Slider label="Master" v={settings.masterVol} on={v => set({ masterVol: v })} />
             <Slider label="Music" v={settings.musicVol} on={v => set({ musicVol: v })} />
             <Slider label="SFX" v={settings.sfxVol} on={v => set({ sfxVol: v })} />
+            <Toggle label="Fighter voices" v={settings.voices} on={v => set({ voices: v })} />
+            <p className="text-[10px] leading-relaxed text-white/35 -mt-1">
+              Synthesized barks — attack grunts, big-hit yells, KO cries, victory quips. No samples involved.
+            </p>
           </section>
 
           <section className="panel rounded-lg p-5 space-y-3">

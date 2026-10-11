@@ -15,7 +15,7 @@
     "sim:render": "node tools/sim/render-smoke.mjs",
     "sim:autotune": "node tools/sim/autotune.mjs",
     "lobby": "node mini-services/lobby-service/server.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:replay && npm run sim:frames && npm run sim:render",
+    "verify": "npm run typecheck && npm run lint && npm run sim:determinism && npm run sim:replay && npm run sim:frames && npm run sim:render && npm run test:unit",
     "sim:ladder": "node tools/sim/ladder.mjs",
     "sim:replay": "node tools/sim/replay.mjs",
     "sim:shot": "node tools/sim/shot.mjs",
@@ -23,7 +23,8 @@
     "build:server": "NEXT_OUTPUT=standalone next build",
     "start:server": "node .next/standalone/server.js",
     "preview": "node tools/preview.mjs",
-    "preview:full": "node tools/preview.mjs --with-lobby"
+    "preview:full": "node tools/preview.mjs --with-lobby",
+    "test:unit": "node --test tools/sim/unit.test.mjs"
   },
   "dependencies": {
     "next": "^16.1.1",

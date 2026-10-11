@@ -328,10 +328,20 @@ export function StageSelect({ onConfirm, onBack, hazardsNote }: { onConfirm: (st
   const [sel, setSel] = useState<string | null>(null);
 
   useEffect(() => {
-    stages.forEach((s, i) => {
-      const c = refs.current[i];
-      if (c) renderStagePreview(s, c);
-    });
+    // animate the live thumbnails — leaves drift, embers rise — but stay
+    // still for reduced-motion users, and stay cheap (≈8 fps is plenty here)
+    let tick = 40;
+    const paint = () => {
+      tick += 15; // ~1/4 sim-second of ambience per repaint
+      stages.forEach((s, i) => {
+        const c = refs.current[i];
+        if (c) renderStagePreview(s, c, tick);
+      });
+    };
+    paint();
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const iv = window.setInterval(paint, 120);
+    return () => window.clearInterval(iv);
   }, [stages]);
 
   const all = [{ id: '__random', name: 'RANDOM', desc: 'Let the rift decide.', hazardLabel: null as string | null, preview: -1 }, ...stages.map((s, i) => ({ id: s.id, name: s.name, desc: s.desc, hazardLabel: s.hazardLabel, preview: i }))];

@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   masterVol: 0.8,
   musicVol: 0.55,
   sfxVol: 0.85,
+  voices: true,
   screenShake: 1.0,
   particles: 'high',
   quality: 'high',

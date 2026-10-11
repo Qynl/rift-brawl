@@ -19,6 +19,11 @@ interface Pose {
 
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
 
+/** eyes close for 5 frames every ~3s, staggered per player so they never sync up */
+function isBlinking(f: Fighter, tick: number) {
+  return f.state === 'idle' || f.state === 'walk' ? ((tick + f.playerIndex * 53) % 190) < 5 : false;
+}
+
 function computePose(f: Fighter, tick: number): Pose {
   const p: Pose = {
     lean: 0, crouch: 0, bob: 0, rot: 0, squash: 1,
@@ -79,6 +84,20 @@ function computePose(f: Fighter, tick: number): Pose {
       p.crouch = 0.55; p.squash = 0.82;
       p.legF = [0.6, 1.1]; p.legB = [-0.6, 1.1];
       p.armF = [0.7, 0.6]; p.armB = [-0.7, 0.6];
+      break;
+    }
+    case 'jumpsquat': {
+      // coiled spring: compresses deeper over the window, then release carries
+      // into the air-stretch in doJump — the classic anticipation/sell pair
+      const k = clamp(1 - f.stateTimer / 5, 0, 1);
+      p.squash = 1 - 0.15 * k;
+      p.crouch = 0.62 + 0.26 * k;
+      p.lean = -0.05;
+      p.armF = [0.55 + 0.5 * k, 0.85];
+      p.armB = [-0.55 - 0.5 * k, 0.9];
+      p.legF = [0.62 + 0.3 * k, 1.35];
+      p.legB = [-0.62 - 0.3 * k, 1.35];
+      p.headTilt = 0.06;
       break;
     }
     case 'shield': case 'shieldstun': {
@@ -326,8 +345,53 @@ function limb(
   ctx.beginPath();
   ctx.moveTo(x, y); ctx.lineTo(jx, jy); ctx.lineTo(ex, ey);
   ctx.stroke();
+  // volume pass: a bright streak hugging the limb's upper edge. Flat single
+  // strokes read as tubes at game camera distance; this one offset highlight
+  // is what makes them read as sculpted.
+  const hl = shadeAny(color, 34);
+  for (const [x0, y0, x1, y1] of [[x, y, jx, jy], [jx, jy, ex, ey]] as const) {
+    const mx = (x1 - x0), my = (y1 - y0);
+    const mLen = Math.hypot(mx, my) || 1;
+    const nx = -my / mLen, ny = mx / mLen;      // surface normal (up-ish side)
+    const off = width * 0.28;
+    ctx.strokeStyle = hl;
+    ctx.globalAlpha = 0.72;
+    ctx.lineWidth = Math.max(1, width * 0.3);
+    ctx.beginPath();
+    ctx.moveTo(x0 + mx * 0.16 + nx * off, y0 + my * 0.16 + ny * off);
+    ctx.lineTo(x1 - mx * 0.16 + nx * off, y1 - my * 0.16 + ny * off);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  // articulation dot at the elbow/knee
+  ctx.fillStyle = shadeAny(color, -16);
+  ctx.beginPath(); ctx.arc(jx, jy, width * 0.36, 0, Math.PI * 2); ctx.fill();
   if (end) end(ex, ey, aT);
   return { ex, ey, ang: aT };
+}
+
+/**
+ * A boot that actually reads as a boot: toe box, ankle, sole stripe. Rotated to
+ * follow the foot angle so it points wherever the leg does.
+ */
+function drawBoot(ctx: CanvasRenderingContext2D, ex: number, ey: number, ang: number, base: string, soleCol: string, outline: string, size: number) {
+  ctx.save();
+  ctx.translate(ex, ey);
+  ctx.rotate(ang + 0.5); // feet lead slightly forward of the shin
+  ctx.fillStyle = outline;
+  roundCapsule(ctx, size * 0.42, 0, size + 2.6, size * 0.72 + 2.2, size * 0.34);
+  ctx.fill();
+  ctx.fillStyle = base;
+  roundCapsule(ctx, size * 0.42, 0, size, size * 0.72, size * 0.3);
+  ctx.fill();
+  // sole
+  ctx.fillStyle = soleCol;
+  roundCapsule(ctx, size * 0.5, size * 0.22, size * 0.88, size * 0.26, size * 0.12);
+  ctx.fill();
+  // toe cap sheen
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.beginPath(); ctx.ellipse(size * 0.66, -size * 0.13, size * 0.2, size * 0.11, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 }
 
 function roundCapsule(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -369,6 +433,15 @@ function shade(hex: string, amt: number): string {
   const b = parseInt(n.substring(4, 6), 16);
   const cl = (v: number) => clamp(Math.round(v), 0, 255);
   return `rgb(${cl(r + amt)},${cl(g + amt)},${cl(b + amt)})`;
+}
+
+/** shade that also survives `rgb()/rgba()` inputs (limbs arrive pre-shaded) */
+function shadeAny(col: string, amt: number): string {
+  if (col.startsWith('#')) return shade(col, amt);
+  const m = col.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return col;
+  const cl = (v: number) => clamp(Math.round(v), 0, 255);
+  return `rgb(${cl(+m[1] + amt)},${cl(+m[2] + amt)},${cl(+m[3] + amt)})`;
 }
 
 function hexA(hex: string, a: number): string {
@@ -540,11 +613,8 @@ function drawBody(
   const limbW = heavy ? 8.4 : f.id === 'nova' || f.id === 'volt' || f.id === 'wraith' ? 6 : 6.6;
 
   // ---- back leg & arm ----  (pose convention: 0 = straight down, + = forward)
-  limb(ctx, -2, hipY + 2, pose.legB[0], pose.legB[1], 10.5, 10.5, limbW, shade(dark, -6), outline, (ex, ey) => {
-    ctx.fillStyle = shade(dark, -18);
-    ctx.strokeStyle = outline;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.ellipse(ex + 1.5, ey, 4.6, 2.8, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  limb(ctx, -2, hipY + 2, pose.legB[0], pose.legB[1], 10.5, 10.5, limbW, shade(dark, -6), outline, (ex, ey, ang) => {
+    drawBoot(ctx, ex, ey, ang, shade(dark, -10), shade(dark, -28), outline, heavy ? 9.4 : 8.2);
   });
   limb(ctx, -3, shoulderY + 2, pose.armB[0], pose.armB[1], 10.5, 10, limbW * 0.85, shade(dark, 2), outline, (ex, ey, ang) => {
     drawHand(ctx, f, ex, ey, ang, shade(dark, 14), false, tick);
@@ -574,6 +644,21 @@ function drawBody(
   ctx.moveTo(bodyW * 0.28, shoulderY + 3);
   ctx.quadraticCurveTo(bodyW * 0.52, shoulderY + bodyH * 0.5, bodyW * 0.3, hipY);
   ctx.stroke();
+  // back-face core shading: an offset dark capsule copy so the torso gains a
+  // lit front face / shaded back face split instead of one flat ramp
+  ctx.save();
+  ctx.globalAlpha = 0.2;
+  ctx.fillStyle = '#05060e';
+  roundCapsule(ctx, -bodyW * 0.17, (shoulderY + hipY) / 2 + 3, bodyW * 0.92, bodyH, bodyW * 0.4);
+  ctx.fill();
+  ctx.restore();
+  // top-left specular sheen curve
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-bodyW * 0.24, shoulderY + 4);
+  ctx.quadraticCurveTo(-bodyW * 0.37, shoulderY + bodyH * 0.42, -bodyW * 0.28, hipY - 3);
+  ctx.stroke();
   // chest emblem / core light
   ctx.fillStyle = c.glow;
   ctx.globalAlpha = 0.9;
@@ -590,11 +675,8 @@ function drawBody(
   drawBackDetail(ctx, f, shoulderY, tick);
 
   // ---- front leg ----
-  limb(ctx, 2, hipY + 2, pose.legF[0], pose.legF[1], 11, 11, limbW, shade(main, -14), outline, (ex, ey) => {
-    ctx.fillStyle = shade(dark, 6);
-    ctx.strokeStyle = outline;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.ellipse(ex + 1.5, ey, 4.8, 2.9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  limb(ctx, 2, hipY + 2, pose.legF[0], pose.legF[1], 11, 11, limbW, shade(main, -14), outline, (ex, ey, ang) => {
+    drawBoot(ctx, ex, ey, ang, shade(main, -6), shade(dark, -24), outline, heavy ? 10 : 8.8);
   });
 
   // ---- head ----
@@ -863,9 +945,12 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
       }
       // eyes
       ctx.fillStyle = '#fff6e8';
-      ctx.beginPath(); ctx.ellipse(3.4, -0.5, 1.8, 2.2, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.secondary;
-      ctx.beginPath(); ctx.arc(3.9, -0.4, 1, 0, Math.PI * 2); ctx.fill();
+      const blinkE = isBlinking(f, tick) ? 0.16 : 1;
+      ctx.beginPath(); ctx.ellipse(3.4, -0.5, 1.8, 2.2 * blinkE, 0, 0, Math.PI * 2); ctx.fill();
+      if (blinkE === 1) {
+        ctx.fillStyle = c.secondary;
+        ctx.beginPath(); ctx.arc(3.9, -0.4, 1, 0, Math.PI * 2); ctx.fill();
+      }
       break;
     }
     case 'hook': {
@@ -911,9 +996,10 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
       ctx.beginPath(); ctx.arc(2.4, -2, 0.9, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(-2.2, 1.4, 0.7, 0, Math.PI * 2); ctx.fill();
       // glowing eyes inside dome
+      const blinkN = isBlinking(f, tick) ? 0.18 : 1;
       ctx.fillStyle = c.glow;
-      ctx.beginPath(); ctx.arc(2.8, 0.8, 1.3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-0.6, 0.8, 1.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(2.8, 0.8, 1.3, 1.3 * blinkN, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-0.6, 0.8, 1.2, 1.2 * blinkN, 0, 0, Math.PI * 2); ctx.fill();
       // orbit ring
       ctx.strokeStyle = hexA(c.glow, 0.65);
       ctx.lineWidth = 1.3;
@@ -933,12 +1019,15 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
         ctx.stroke();
       }
       // goggle eyes
+      const blinkV = isBlinking(f, tick) ? 0.2 : 1;
       ctx.fillStyle = '#241d04';
-      ctx.beginPath(); ctx.arc(2.8, -0.4, 2.4, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-1.8, -0.4, 2, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.glow;
-      ctx.beginPath(); ctx.arc(3.2, -0.5, 1.2, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-1.5, -0.5, 1, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(2.8, -0.4, 2.4, 2.4 * blinkV, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-1.8, -0.4, 2, 2 * blinkV, 0, 0, Math.PI * 2); ctx.fill();
+      if (blinkV === 1) {
+        ctx.fillStyle = c.glow;
+        ctx.beginPath(); ctx.arc(3.2, -0.5, 1.2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(-1.5, -0.5, 1, 0, Math.PI * 2); ctx.fill();
+      }
       break;
     }
     case 'frost': {
@@ -1059,9 +1148,10 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
       ctx.beginPath(); ctx.arc(-r * 0.15, -r * 0.6, 1.6, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(r * 0.55, -r * 0.6, 1.6, 0, Math.PI * 2); ctx.fill();
       // bright eyes
+      const blinkT = isBlinking(f, tick) ? 0.18 : 1;
       ctx.fillStyle = c.glow;
-      ctx.beginPath(); ctx.arc(r * 0.42, r * 0.05, 1.5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-r * 0.28, r * 0.05, 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(r * 0.42, r * 0.05, 1.5, 1.5 * blinkT, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-r * 0.28, r * 0.05, 1.3, 1.3 * blinkT, 0, 0, Math.PI * 2); ctx.fill();
       // wind streak past the cheek
       ctx.strokeStyle = hexA(c.accent, 0.55);
       ctx.lineWidth = 1;
@@ -1086,9 +1176,10 @@ function drawHead(ctx: CanvasRenderingContext2D, f: Fighter, x: number, y: numbe
       ctx.fillStyle = 'rgba(4,6,4,0.85)';
       ctx.beginPath(); ctx.ellipse(0.5, r * 0.28, r * 0.66, r * 0.5, 0, 0, Math.PI * 2); ctx.fill();
       // amber hunter eyes
+      const blinkJ = isBlinking(f, tick) ? 0.18 : 1;
       ctx.fillStyle = c.glow;
-      ctx.beginPath(); ctx.arc(r * 0.42, r * 0.22, 1.5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-r * 0.26, r * 0.22, 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(r * 0.42, r * 0.22, 1.5, 1.5 * blinkJ, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-r * 0.26, r * 0.22, 1.3, 1.3 * blinkJ, 0, 0, Math.PI * 2); ctx.fill();
       // cheek scar
       ctx.strokeStyle = hexA('#d8d2c2', 0.7);
       ctx.lineWidth = 1;

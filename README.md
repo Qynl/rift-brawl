@@ -26,12 +26,14 @@ The hero console is live: pick a fighter and a difficulty and the match starts w
 ## Features
 
 - **12 original brawlers** — VANGUARD, EMBER, HOOK, TITAN, NOVA, VOLT, FROST, WRAITH, SERAPH, VIPER, TEMPEST and JAEGER. Every fighter has a signature weapon, its own archetype and stats, and a fully authored moveset with real frame data (startup / active / recovery), per-move hitboxes and knockback angles.
-- **Platform-fighter combat** — damage percent + knockback (base / growth / angle), hitstun, stocks, blast zones, ledge play, shields, dodges, grabs and throw games.
-- **6 stages** — Forest, Volcano, Neon, Frozen, Sky and Rift, each with its own layout.
+- **Animated fighters, not stick figures** — pose-driven anatomy (eyes that track the opponent, hurt faces, wind-up → strike → follow-through read straight from the frame data), squash & stretch, afterimage trails and per-fighter chest detail.
+- **Real KO spectacle** — blast, star and screen KOs with a mid-flight puppet, glass-slam and twinkle-out; directional impact bursts, shock rings, chromatic snap, danger flashes and damage numbers that pop white → gold → red.
+- **Platform-fighter combat** — damage percent + knockback (base / growth / angle), hitstun, jumpsquat timing per fighter, stocks, blast zones, ledge play, shields, dodges, grabs and throw games.
+- **6 living stages** — Forest, Volcano, Neon, Frozen, Sky and Rift, each with its own layout *and* ambience: falling leaves and fireflies, lavafalls and ember fountains, traffic streaks and holo-billboards, twinkling ice, a cloud sea with bird flights, and rift debris and lightning.
 - **Game modes** — Quick Match, Arcade, Survival, Training, Challenges and local VS.
 - **Online lobby** — create a room, share the lobby code, fight with up to 4 players via the Socket.io lobby service.
-- **Utility AI** — 6 personalities × 4 difficulty levels, non-omniscient, with spacing, edge safety and recovery decisions.
-- **Original audio** — procedural Web Audio synthesis for every swing, hit and UI sound.
+- **Utility AI** — 6 personalities × 4 difficulty levels (verifiably monotonic: easy → expert win% against the normal reference is strictly increasing), non-omniscient, with spacing, edge safety and recovery decisions.
+- **Original audio** — procedural Web Audio synthesis for every swing, hit, UI sound and per-stage soundtrack — plus **synthesised fighter voices**: per-fighter pitch/timbre/formant prints so grunts, big-hit cries, KO screams and victory quips are all still sample-free. Toggle in Settings → Audio.
 - **Full customization** — remappable keyboard bindings for both players, gamepad support, progress saved in localStorage.
 
 ## Controls (default, Player 1)
@@ -110,15 +112,20 @@ There is no browser test runner; instead the real engine is driven headlessly
 from Node (`tools/sim/`), which is what CI gates on.
 
 ```bash
-npm run verify           # typecheck + lint + determinism + frame data + render smoke
+npm run verify           # typecheck + lint + determinism + frame data + render smoke + unit tests
 
 npm run sim:determinism  # identical inputs must produce byte-identical state
 npm run sim:frames       # startup/active/recovery + on-shield safety for all 164 moves
 npm run sim:render       # every fighter × stage × visual state, checking for throws
+npm run test:unit        # physics invariants, replay codec, caches, full KO lifecycle
 npm run sim:balance      # AI round-robin win-rate spread (slow, noisy)
+npm run sim:ladder       # AI difficulty ladder monotonicity (easy → expert)
 npm run sim:usage        # which moves/mechanics the AI actually reaches for
 npm run sim:autotune     # searches the per-fighter BALANCE multipliers
 ```
+
+Headless QA hooks (`window.__match`, `__net`, `__rb`) are opt-in per page load — append `?debug`
+to the URL when you want them.
 
 ## Project structure
 

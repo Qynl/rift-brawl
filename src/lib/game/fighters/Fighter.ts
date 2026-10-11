@@ -41,6 +41,8 @@ export interface World {
   onSwing?(f: Fighter, m: MoveData): void;
   onHitConnect(attacker: Fighter, victim: Fighter, info: HitInfo): void;
   onCounterSuccess(f: Fighter): void;
+  /** vocal barks — Match maps these to the audio engine (settings-gated) */
+  onBark?(f: Fighter, kind: import('../audio/AudioManager').FighterBark): void;
   onShieldBreak(f: Fighter): void;
 }
 
@@ -674,7 +676,14 @@ export class Fighter {
       if (this.grounded || this.coyote > 0) {
         this.jumpBuffer = 0; this.coyote = 0;
         this.jumpsUsed = 1;
-        this.doJump(this.stats.jumpVel, 'jump');
+        // JUMPSQUAT: a grounded jump has a real wind-up. The state existed for
+        // months but tryJump bypassed it, so leaving the floor was instant and
+        // reads/animation had no anchor. OOS jumps, ledge jumps and air jumps
+        // stay instant — only the raw ground jump pays the 4 frames.
+        this.state = 'jumpsquat';
+        this.stateTimer = PHYS.jumpSquatFrames;
+        this.pendingJumpVel = this.stats.jumpVel;
+        this.pendingJumpSfx = 'jump';
         return true;
       } else if (this.jumpsUsed < maxJumps) {
         this.jumpBuffer = 0;
@@ -741,6 +750,10 @@ export class Fighter {
 
   private updateJumpsquat(input: InputState) {
     this.stateTimer--;
+    // anticipation frames: bleed ground speed; a held direction re-aims the
+    // take-off so dash-jumps and turnarounds keep their intent.
+    this.vx -= clamp(this.vx, -this.stats.friction, this.stats.friction);
+    if (input.axisX !== 0) this.facing = input.axisX > 0 ? 1 : -1;
     if (this.stateTimer <= 0) {
       this.grounded = false;
       this.doJump(this.pendingJumpVel, this.pendingJumpSfx);
@@ -1125,6 +1138,9 @@ export class Fighter {
     if (move.behavior === 'hook_grapple' || move.behavior === 'hook_zip' || move.behavior === 'vanguard_rising' || move.behavior === 'ember_tp' || move.behavior === 'nova_rise' || move.behavior === 'volt_thunder' || move.behavior === 'frost_rise' || move.behavior === 'wraith_ascent' || move.behavior === 'seraph_wings' || move.behavior === 'viper_coil' || move.behavior === 'tempest_twister') {
       this.upSpecialUsed = move.behavior === 'vanguard_rising' || move.behavior === 'ember_tp' || move.behavior === 'hook_zip' || move.behavior === 'nova_rise' || move.behavior === 'volt_thunder' || move.behavior === 'frost_rise' || move.behavior === 'wraith_ascent' || move.behavior === 'seraph_wings' || move.behavior === 'viper_coil' || move.behavior === 'tempest_twister';
     }
+    // vocal effort: smashes and specials get a grunt at the wind-up (the bark
+    // channel rate-limits itself, so whiffed strings never become chatter)
+    if (move.strong || move.kind === 'special') this.world.onBark?.(this, 'attack');
     // net: announce the swing/special so remote clients can play its sound
     this.world.emitSfx(move.sfx);
     return true;

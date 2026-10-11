@@ -22,7 +22,100 @@ live in `tools/sim/`.
 | Initial JS payload | 1 068 KB raw | 660 KB raw / **206 KB gzipped** |
 | Runtime dependencies | 20 | 6 |
 | UI components | 52 (46 unused) | 6 |
-| CI | none | typecheck, lint, determinism, replay fidelity, frame data, render smoke, build |
+| CI | none | typecheck, lint, determinism, replay fidelity, frame data, render smoke, unit tests, build |
+
+### Round 2 — the presentation pass
+
+Win-rate spread after the `jumpsquat` connection (hard AI, 6 reps, 792 matches): **spread 21.2 pts,
+worst deviation 11.4 of a 26 budget — PASS.** Ladder at 3 reps: 8.3 → 47.2 → 62.5 → 73.6 % monotonic
+(the earlier flat line and a noisy expert<hard blip are both gone at this sample size).
+
+---
+
+## Round 2 — making it look and feel like a real game · **done**
+
+Round 1 made the game fair and fast; it still *looked* like a prototype — flat stick figures,
+modest hit feedback, static stages, thin audio. This round was a six-track presentation overhaul,
+with the hard rule that none of it may touch the deterministic simulation. All gates stayed green
+throughout; the only deliberate sim change (`jumpsquat`, below) was re-balanced and re-verified.
+
+### Track 1 — fighter renderer
+
+Every one of the 12 fighters is now drawn as a little animated character instead of a highlighted
+stick figure:
+
+- **Anatomy** — joint-dotted limbs with muscle-line highlights (`shadeAny`, since limb colours
+  arrive pre-shaded as `rgb()` strings — `shade()`'s hex assumption shipped a `rgb(NaN,…)` crash
+  that the render smoke suite caught on all 36 pairings), a torso with a real chest gradient and
+  per-fighter detail (TITAN's plate seams, VOLT's emblem, WRAITH's torn hem…), a head with eyes that
+  **track the opponent**, blink, widen on hit, and close during respawn.
+- **Pose-driven animation** — `computePose()` maps the real frame data (startup/active/recovery,
+  `windup`/`strike` arm angles, motion kind) onto shoulders/hips/knees every frame, so a smash
+  actually winds up, strikes and follows through instead of swiping a stiff limb.
+- **Squash & stretch** — charge anticipation compresses the body, launches elongate it, landing
+  flattens it; ghosts and weapon-tip trails are rate-limited through WeakMap state.
+
+### Track 2 — hit juice and KO spectacle
+
+- Directional impact bursts in the attacker's color, deforming shock rings, chromatic snap scaled
+  by knockback, speed lines and a zoom-punch on anything that tumbles.
+- **Three KO exits** — a blast flare on the side kill, star-KOs spin up into the sky and twinkle
+  out, screen-KOs slam into the camera glass. Bodies are rendered as puppets mid-flight.
+- Damage numbers pop with physics and ramp white → gold → red by hit power; kill thresholds flash
+  DANGER over the victim.
+
+### Track 3 — stage art
+
+All six stages got an ambience layer (drawn + particle hooks, deterministic-RNG-safe ones in
+`drawBg`, sim-untouched `update()` hooks where they existed before):
+
+- **Forest** — denser leaf fall, drifting fireflies.
+- **Volcano** — a right-shoulder lavafall, under-arena heat wash, rising smoke columns, a crater
+  ember fountain, basalt strata bands and nine branched heat-lit fissures so the mid-band is no
+  longer a brown wall.
+- **Neon** — two parallax traffic light-streak lanes, a flickering holo-billboard with a scan band
+  and glyph bars, tighter rain.
+- **Frozen** — twelve deterministic twinkling ice glints, snow.
+- **Sky** — a cloud sea below (retuned after the first pass over-washed the whole sky), two bird
+  chevron flights.
+- **Rift** — tumbling debris rocks, a shooting star, rift lightning flickers.
+
+### Track 4 — HUD and announcer
+
+- A real **3 · 2 · 1 · FIGHT!** count-in (the 3 was missing) with a zoom punch and speed lines on
+  GO; the last ten seconds now tick with urgency (final five at a higher pitch).
+- Ambiance beats: heartbeat under the music when someone is on their last stock deep in the red.
+
+### Track 5 — synthesised voices
+
+`AudioManager.playVoice(id, kind)` — per-fighter voice prints (pitch register, oscillator timbre,
+formant scale: Titan rumbles at 95 Hz, Volt snaps at 230 Hz), each bark rasterised through a
+two-formant swept bandpass "throat". Attack grunts on smashes/specials, small and big hurt cries
+by launch force, KO cries, victory quips — all rate-limited per fighter per kind so strings never
+chatter, all 100 % synthesised (no samples), and wired over rollback: `ko` and `hit` net events
+carry the victim index so remote clients hear bodies too.
+`settings.voices` (default on) toggles them from Settings → Audio.
+
+### Track 6 — leftovers, robustness, gates
+
+- **`jumpsquat` finally connected.** `tryJump` used to call `doJump` directly; characters now pass
+  through their per-fighter squat frames (heavies slower, lights snappier). Replays bumped to
+  format **v2** (old tracks replay to a different sim and are refused). The full balance suite was
+  re-run at 6 reps — spread 21.2 pts, every fighter inside the budget.
+- **Production bug caught by the new unit suite:** the KO puppet renderer assigned `scale` to an
+  accessor-only property — a `TypeError` on every blast KO, in the exact code path the 40-frame
+  render smoke window never reaches. `emitPuppet` now defines the property properly, and
+  `tools/sim/unit.test.mjs` renders an entire forced-KO lifecycle to keep it fixed.
+- **Unit-test layer** — `npm run test:unit` (node:test): knockback-model invariants, hitstun /
+  shieldstun clamps, tumble threshold exclusivity, replay pack/unpack edge reconstruction and a
+  full recorder→playback round-trip, gradient-cache reuse, voice-print roster coverage, and the KO
+  lifecycle above. Wired into `npm run verify` and CI.
+- **Debug globals are opt-in.** `window.__match/__net/__rb` now require a `?debug` query/`#debug`
+  hash instead of shipping to every page load by default.
+- **Menus** — stage-select thumbnails are live and animate the ambience at ≈8 fps
+  (respecting `prefers-reduced-motion`).
+
+---
 
 ---
 
@@ -198,8 +291,6 @@ before hydration. It is now a full server-rendered marketing site in front of th
 - **Rollback netcode.** The relay is host-authoritative at 30 Hz with interpolation, so remote
   latency is a full round trip. Replay fidelity proves the simulation is deterministic enough for
   rollback; that is the next big netcode step.
-- **Unit tests.** The simulation harnesses are strong integration tests, but there is no unit
-  layer over the pure maths (`knockbackOf`, the replay codec, the gradient cache).
-- `ParticleSystem.spawn()` still linear-scans a 700-slot pool.
-- The `jumpsquat` state exists but `tryJump` calls `doJump` directly.
-- Debug globals `window.__match/__net/__rb` are still exposed.
+- Done in Round 2: the unit-test layer (knockback invariants, replay codec, caches, KO lifecycle),
+  the `jumpsquat` state (now connected; replay format v2), debug globals (now behind `?debug`),
+  and `ParticleSystem.spawn`'s linear scan (a free-list + bounded round-robin steal landed earlier).
